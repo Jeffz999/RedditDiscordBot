@@ -73,13 +73,14 @@ class RedditMonitor:
                             try:
                                 async_subreddit = await reddit.subreddit(subreddit)
                                 async for submission in async_subreddit.new(limit=100):
-                                    # Check if all keywords are in the submission's title
                                     if all(keyword.lower() in submission.title.lower() for keyword in keywords):
                                         user = await client.fetch_user(user_id)
-                                        await user.send(f"Deal found: {submission.title}\n{submission.url}")
+                                        post_url = f"https://reddit.com{submission.permalink}"
+                                        await user.send(f"Deal found: {submission.title}\n{post_url}")
                             except Exception as e:
                                 print(f"An error occurred: {e}")
             await asyncio.sleep(interval)
+
 
             
     def get_user_profile(self, user_id):
@@ -120,20 +121,23 @@ async def add(ctx, *arr):
 @bot.command(name='greet')
 async def greet(ctx, *args):
     message = ' '.join(args).lower()
-    if message.lower() == 'who are you':  # Check if the argument is 'hello'
+    if message.lower() == 'who are you' or message.lower() == 'who are you?':  # Check if the argument is 'hello'
         await ctx.send("Do you 2 piss ants not have a clue who I am?\nSeriously\nI am Alek Fucking Rawls. I am the founder of Republic of Texas Airsoft\n\nI am not some speedsofter to shit on")
     else:
         await ctx.send("and you too")
         
 @bot.command()
 async def help_commands(ctx):
-    await ctx.send("Ok so while I am also a satrical representation of TLA's Chairman/Dictator, my main purpose is to save money by checking reddit for deals (subreddits like gundeals or gafs). \n\nFunction: \"$addfilter subreddit entry_name keywords\" with keywords being a list of keywords you want checked is how u tell me what things you want searched. To remove a filter use \"removefilter subreddit entryname\"\n\nFor any other questions just ask the creater")
+    await ctx.send("Ok so while I am also a satrical representation of TLA's Chairman/Dictator, my main purpose is to save money by checking reddit for deals. \n\nFunction: \"$addfilter subreddit entry_name keywords\" with keywords being a list of keywords you want checked is how u tell me what things you want searched. To remove a filter use \"removefilter subreddit entryname\"\n\nFor any other questions just ask the creater")
 
 @bot.command()
 async def add_filter(ctx, subreddit, entry_name, *keywords):
-    response = reddit_monitor.add_filter(str(ctx.author.id), subreddit, entry_name, keywords)
-    reddit_monitor.save_filters('filters.csv')
-    await ctx.send(response)
+    if keywords == () or keywords == (" "):
+        await ctx.send("Bruh ur giving me no keywords")
+    else:
+        response = reddit_monitor.add_filter(str(ctx.author.id), subreddit, entry_name, keywords)
+        reddit_monitor.save_filters('filters.csv')
+        await ctx.send(response)
 
 @bot.command()
 async def remove_filter(ctx, subreddit, entry_name):
