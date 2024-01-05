@@ -15,7 +15,7 @@ load_dotenv()
 REDDIT_CLIENT_ID = os.getenv('REDDIT_CLIENT_ID') 
 REDDIT_SECRET = os.getenv('REDDIT_SECRET')
 USER_AGENT = os.getenv('USER_AGENT')
-CHECK_INTERVAL = 120 #TODO: change to 5 min
+CHECK_INTERVAL = os.getenv('PING_TIMER')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 
 logging.basicConfig(level=logging.INFO, 
@@ -59,7 +59,7 @@ check_reddit_task = None
 async def on_ready():
     global check_reddit_task
     print("Initialized")
-    channel = bot.get_channel(CHANNEL_ID)  # Replace with your channel ID
+    channel = bot.get_channel(int(CHANNEL_ID))  # Replace with your channel ID
     if channel:
         await channel.send("Initialized. Use \"$help_commands\" for documentation")
     check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
