@@ -100,5 +100,19 @@ async def show_profile(ctx):
     user_id = str(ctx.author.id)
     profile_info = reddit_monitor.get_user_profile(user_id)
     await ctx.send(f"Your profile:\n{profile_info}")
+    
+@bot.command(name='shutdown')
+@commands.is_owner()
+async def shutdown(ctx):
+    """Shuts down the bot. Only the bot owner can use this command."""
+    await ctx.send("Shutting down...")
+    await bot.logout()
+    await bot.close()
+
+@shutdown.error
+async def shutdown_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("You do not have permission to use this command.")
+
 
 bot.run(os.getenv('DISCORD_TOKEN'))
