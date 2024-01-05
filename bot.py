@@ -14,7 +14,8 @@ load_dotenv()
 REDDIT_CLIENT_ID = os.getenv('REDDIT_CLIENT_ID') 
 REDDIT_SECRET = os.getenv('REDDIT_SECRET')
 USER_AGENT = os.getenv('USER_AGENT')
-CHECK_INTERVAL = 60 #TODO: change to 5 min
+CHECK_INTERVAL = 120 #TODO: change to 5 min
+CHANNEL_ID = os.getenv('CHANNEL_ID')
 
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -54,7 +55,7 @@ reddit_monitor = RedditMonitor(REDDIT_CLIENT_ID, REDDIT_SECRET, USER_AGENT, engi
 @bot.event
 async def on_ready():
     print("Initialized")
-    channel = bot.get_channel(1172792075566202890)  # Replace with your channel ID
+    channel = bot.get_channel(CHANNEL_ID)  # Replace with your channel ID
     if channel:
         await channel.send("Initialized. Use \"$help_commands\" for documentation")
     bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
@@ -70,20 +71,23 @@ async def add(ctx, *arr):
 async def greet(ctx, *args):
     message = ' '.join(args).lower()
     if message.lower() == 'who are you' or message.lower() == 'who are you?':  # Check if the argument is 'hello'
-        await ctx.send("Do you have 2 piss ants not have a clue who I am?\nSeriously\nI am Alek Fucking Rawls. I am the founder of Republic of Texas Airsoft\n\nI am not some speedsofter to shit on")
+        await ctx.send("Do you 2 piss ants not have a clue who I am?\nSeriously\nI am Alek Fucking Rawls. I am the founder of Republic of Texas Airsoft\n\nI am not some speedsofter to shit on")
     else:
         await ctx.send("and you too")
         
 @bot.command()
 async def help_commands(ctx):
-    await ctx.send("Ok so while I am also a satrical representation of TLA's Chairman/Dictator, my main purpose is to save money by checking reddit for deals. \n\nFunction: \"$addfilter subreddit entry_name keywords\" with keywords being a list of keywords you want checked is how u tell me what things you want searched. To remove a filter use \"removefilter subreddit entryname\"\n\nFor any other questions just ask the creater")
+    await ctx.send("Ok so while I am also a satrical representation of TLA's Chairman/Dictator, my main purpose is to save money by checking reddit for deals. \n\nFunction: \"$addfilter subreddit entry_name keywords\" with keywords being a list of keywords you want checked is how u tell me what things you want searched. \n\nTo remove a filter use \"removefilter subreddit entryname\"\n\nFor any other questions just ask the creater")
 
 @bot.command()
 async def add_filter(ctx, subreddit, entry_name, *keywords):
     if keywords == () or keywords == (" "):
         await ctx.send("Bruh ur giving me no keywords")
     else:
-        response = reddit_monitor.add_filter(str(ctx.author.id), subreddit, entry_name, keywords)
+        # Retrieve the Discord username
+        discord_username = ctx.author.name  # This gets the user's Discord name
+        # Call add_filter with the Discord username
+        response = reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
         await ctx.send(response)
 
 @bot.command()

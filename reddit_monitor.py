@@ -16,6 +16,7 @@ class UserSubreddit(Base):
     __tablename__ = 'UserSubreddit'
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), nullable=False)
+    discord_name = Column(String(255))
     subreddit = Column(String(255), nullable=False)
     entries = relationship("EntryName", back_populates="user_subreddit")
 
@@ -37,15 +38,19 @@ class RedditMonitor:
         
         self.subreddit_cache = defaultdict(list)
 
-    def add_filter(self, user_id:str, subreddit:str, entry_name: str, keywords):
+    def add_filter(self, user_id: str, discord_name: str, subreddit: str, entry_name: str, keywords):
         session = self.alchemy_session()
         try:
             # Check if the combination of user and subreddit exists
             user_subreddit = session.query(UserSubreddit).filter_by(user_id=user_id, subreddit=subreddit).first()
             if not user_subreddit:
-                user_subreddit = UserSubreddit(user_id=user_id, subreddit=subreddit)
+                # Create a new UserSubreddit entry with the Discord name
+                user_subreddit = UserSubreddit(user_id=user_id, discord_name=discord_name, subreddit=subreddit)
                 session.add(user_subreddit)
-                session.commit()
+            else:
+                # Optionally, update the discord_name if it's different
+                if user_subreddit.discord_name != discord_name:
+                    user_subreddit.discord_name = discord_name
 
             # Check if the entry name exists under this user and subreddit
             entry = session.query(EntryName).filter_by(user_subreddit_id=user_subreddit.id, entry_name=entry_name).first()
@@ -57,12 +62,13 @@ class RedditMonitor:
                 entry.keywords = ','.join(keywords)
 
             session.commit()
-            return f"Filter '{entry_name}' added/updated for subreddit '{subreddit}' for user '{user_id}'"
+            return f"Filter '{entry_name}' added/updated for subreddit '{subreddit}' for user '{user_id}' with Discord name '{discord_name}'"
         except Exception as e:
             logging.error(f"Error adding/updating filter: {e}")
             return "Error occurred while adding/updating filter."
         finally:
             session.close()
+
     
     def remove_filter(self, user_id:str, subreddit:str, entry_name):
         session = self.alchemy_session()
