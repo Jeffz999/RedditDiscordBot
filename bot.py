@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+import asyncio
 
 import urllib.parse 
 from reddit_monitor import RedditMonitor
@@ -52,13 +53,16 @@ bot = commands.Bot(command_prefix='$', intents=intents)
 
 reddit_monitor = RedditMonitor(REDDIT_CLIENT_ID, REDDIT_SECRET, USER_AGENT, engine, Session)
 
+check_reddit_task = None
+
 @bot.event
 async def on_ready():
+    global check_reddit_task
     print("Initialized")
     channel = bot.get_channel(CHANNEL_ID)  # Replace with your channel ID
     if channel:
         await channel.send("Initialized. Use \"$help_commands\" for documentation")
-    bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
+    check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
 
 @bot.command()
 async def add(ctx, *arr):
@@ -105,9 +109,26 @@ async def show_profile(ctx):
 @commands.is_owner()
 async def shutdown(ctx):
     """Shuts down the bot. Only the bot owner can use this command."""
+    global check_reddit_task
     await ctx.send("Shutting down...")
-    await bot.logout()
-    await bot.close()
+
+    # Cancel the check_reddit task
+    if check_reddit_task and not check_reddit_task.done():
+        check_reddit_task.cancel()
+        try:
+            await check_reddit_task  # Await the task to handle any exceptions
+        except asyncio.CancelledError:
+            await ctx.send("Background tasks have been cancelled.")  # Notify that tasks are cancelled
+
+    try:
+        await bot.close()
+    except asyncio.CancelledError:
+        # This block will handle CancelledError raised by bot.close()
+        pass  # Optionally, log this event or perform other cleanup actions
+
+    # Additional logging or cleanup can go here if needed
+    print("Bot shutdown completed.")
+
 
 @shutdown.error
 async def shutdown_error(ctx, error):
