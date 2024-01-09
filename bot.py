@@ -10,6 +10,8 @@ import urllib.parse
 from reddit_monitor import RedditMonitor
 
 import logging
+
+import responses
 load_dotenv()
 
 REDDIT_CLIENT_ID = os.getenv('REDDIT_CLIENT_ID') 
@@ -59,45 +61,103 @@ check_reddit_task = None
 async def on_ready():
     global check_reddit_task
     print("Initialized")
-    channel = bot.get_channel(int(CHANNEL_ID))  # Replace with your channel ID
-    if channel:
-        await channel.send("Initialized. Use \"$help_commands\" for documentation")
+    channel_ids = os.getenv('CHANNEL_ID').split(',')
+    
+    for channel_id in channel_ids:
+        channel = bot.get_channel(int(channel_id.strip()))
+        if channel:
+            await channel.send("Initialized. Use \"help\" for documentation")
+        else:
+            logging.error(f"\nerror channel {channel_id} failed to initialize\n")
     check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
 
 @bot.command()
 async def add(ctx, *arr):
+    logging.info(f"\nCommand 'add' invoked by {ctx.author}\n")
     sum = 0
     for elem in arr:
         sum += int(elem)
     await ctx.send(f"result = {sum}")
     
-@bot.command(name='greet')
+@bot.command(name='greet', help="greet then type 'who are you' 'who actually are you' or 'gbbrs are bad'")
 async def greet(ctx, *args):
     message = ' '.join(args).lower()
-    if message.lower() == 'who are you' or message.lower() == 'who are you?':  # Check if the argument is 'hello'
-        await ctx.send("Do you 2 piss ants not have a clue who I am?\nSeriously\nI am Alek Fucking Rawls. I am the founder of Republic of Texas Airsoft\n\nI am not some speedsofter to shit on")
+    if message == 'who are you' or message == 'who are you?':  # Check if the argument is 'hello'
+        await ctx.send(responses.RAWLS_PASTA)
+    elif message == "who actually are you" or message == "who actually are you?":
+        await ctx.send(responses.RAWLS_WIKI)
+    elif message == "gbbrs are bad":
+        await ctx.send(responses.GBBR_BITCHING_PASTA)
     else:
         await ctx.send("and you too")
         
-@bot.command()
-async def help_commands(ctx):
-    await ctx.send("Ok so while I am also a satrical representation of TLA's Chairman/Dictator, my main purpose is to save money by checking reddit for deals. \n\nFunction: \"$addfilter subreddit entry_name keywords\" with keywords being a list of keywords you want checked is how u tell me what things you want searched. \n\nTo remove a filter use \"removefilter subreddit entryname\"\n\nFor any other questions just ask the creater")
 
-@bot.command()
-async def add_filter(ctx, subreddit, entry_name, *keywords):
-    if keywords == () or keywords == (" "):
-        await ctx.send("Bruh ur giving me no keywords")
-    else:
-        # Retrieve the Discord username
-        discord_username = ctx.author.name  # This gets the user's Discord name
-        # Call add_filter with the Discord username
-        response = reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
-        await ctx.send(response)
+@bot.command(help="Adds a filter for a subreddit. Usage: $add_filter <subreddit> <entry_name> <keywords>. DO NOT INCLUDE the 'r/' in the subreddit name.")
+async def add_filter(ctx, *args):
+    if len(args) < 3:
+        await ctx.send("Insufficient arguments. You need to provide a subreddit, entry name, and at least one keyword.")
+        return
 
-@bot.command()
+    subreddit, entry_name, *keywords = args
+    logging.info(f"\nCommand 'add_filter' invoked by {ctx.author} with arguments: subreddit={subreddit}, entry_name={entry_name}, keywords={keywords}\n")
+    async def confirmation_check(message):
+        return message.author == ctx.author and message.content.lower() in ["yes", "no"]
+
+
+    # Send back what the bot thinks the arguments are and ask for confirmation
+    confirmation_message = await ctx.send(f"Subreddit: {subreddit}\nEntry Name: {entry_name}\nKeywords: {', '.join(keywords)}. Are you sure you want to proceed? (Reply with 'yes' to confirm or 'no' to cancel)")
+
+    try:
+        # Wait for the user's response
+        confirmation_response = await bot.wait_for('message', check=confirmation_check, timeout=30.0)  # 30 seconds to respond
+
+        # Check the user's response
+        if confirmation_response.content.lower() == "yes":
+            # Retrieve the Discord username
+            discord_username = ctx.author.name
+
+            # Call add_filter with the Discord username
+            response = reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
+            await ctx.send(response)
+        else:
+            await ctx.send("Filter addition cancelled.")
+
+    except asyncio.TimeoutError:
+        # If the user does not respond in 30 seconds
+        await ctx.send("No response received. Filter addition cancelled.")
+        await confirmation_message.delete()
+
+
+@bot.command(help="Removes a filter from a subreddit. Usage: $remove_filter <subreddit> <entry_name>. DO NOT INCLUDE the 'r/' in the subreddit name.")
 async def remove_filter(ctx, subreddit, entry_name):
-    response = reddit_monitor.remove_filter(str(ctx.author.id), subreddit, entry_name)
-    await ctx.send(response)
+    logging.info(f"\nCommand 'add_filter' invoked by {ctx.author} with arguments: subreddit={subreddit}, entry_name={entry_name}\n")
+    if not subreddit or not entry_name:
+        await ctx.send("You must provide both a subreddit and an entry name.")
+        return
+
+    # Send back what the bot thinks the arguments are and ask for confirmation
+    confirmation_message = await ctx.send(f"Subreddit: {subreddit}\nEntry Name: {entry_name}. Are you sure you want to remove this filter? (Reply with 'yes' to confirm or 'no' to cancel)")
+
+    def confirmation_check(message):
+        return message.author == ctx.author and message.content.lower() in ["yes", "no"]
+
+    try:
+        # Wait for the user's response
+        confirmation_response = await bot.wait_for('message', check=confirmation_check, timeout=30.0)  # 30 seconds to respond
+
+        # Check the user's response
+        if confirmation_response.content.lower() == "yes":
+            # Call remove_filter
+            response = reddit_monitor.remove_filter(str(ctx.author.id), subreddit, entry_name)
+            await ctx.send(response)
+        else:
+            await ctx.send("Filter removal cancelled.")
+
+    except asyncio.TimeoutError:
+        # If the user does not respond in 30 seconds
+        await ctx.send("No response received. Filter removal cancelled.")
+        await confirmation_message.delete()
+
     
 @bot.command()
 async def show_profile(ctx):

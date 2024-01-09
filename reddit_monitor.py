@@ -9,6 +9,11 @@ from collections import defaultdict
 from sqlalchemy import Column, Integer, String, ForeignKey, Text
 from sqlalchemy.orm import relationship, declarative_base
 
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+NEW_POSTS = int(os.getenv('NEW_POSTS'))
 
 Base = declarative_base()
 
@@ -62,6 +67,9 @@ class RedditMonitor:
                 entry.keywords = ','.join(keywords)
 
             session.commit()
+            
+            logging.info(f"\nSuccessfully added/updated filter with subreddit '{subreddit}' for user '{user_id}' with entry name '{entry_name}'\n")
+            
             return f"Filter '{entry_name}' added/updated for subreddit '{subreddit}' for user '{user_id}' with Discord name '{discord_name}'"
         except Exception as e:
             logging.error(f"Error adding/updating filter: {e}")
@@ -85,6 +93,9 @@ class RedditMonitor:
             # Remove the filter
             session.delete(entry)
             session.commit()
+            
+            logging.info(f"\nSuccessfully removed filter with subreddit '{subreddit}' for user '{user_id}' with entry name '{entry_name}'\n")
+            
             return f"Filter '{entry_name}' removed for subreddit '{subreddit}'"
         except Exception as e:
             logging.error(f"Error removing filter: {e}")
@@ -102,27 +113,37 @@ class RedditMonitor:
                     session = self.alchemy_session()
                     user_subreddits = session.query(UserSubreddit).order_by(UserSubreddit.subreddit).all()
                     
+                    #for every row in the table
                     for user_subreddit in user_subreddits:
                         subreddit_name = user_subreddit.subreddit
 
+                        #update subreddit entry cache
                         if subreddit_name not in self.subreddit_cache:
-                            print("cache switch subreddit")
+                            print("subreddit cache switch")
+                            logging.info("cache switch subreddit")
                             try:
                                 async_subreddit = await reddit.subreddit(subreddit_name)
-                                self.subreddit_cache[subreddit_name] = [submission async for submission in async_subreddit.new(limit=100)]
+                                #since the rows are sorted by subreddit, if a new one is detected the old one will never appear again
+                                self.subreddit_cache.clear()
+                                self.subreddit_cache[subreddit_name] = [submission async for submission in async_subreddit.new(limit=NEW_POSTS)]
                             except asyncprawcore.exceptions.RequestException as e:
                                 logging.error(f"RequestException while accessing subreddit '{subreddit_name}': {e}")
                                 # Handle the exception (e.g., skip this subreddit, retry after a delay, etc.)
 
+                        #for each entry associated with the user:subreddit pair 
                         for entry in user_subreddit.entries:
+                            sent_submissions = 0
+                            #for each submission in the subreddit's new posts
                             for submission in self.subreddit_cache[subreddit_name]:
                                 if all(keyword.lower() in submission.title.lower() for keyword in entry.keywords.split(',')):
                                     try:
                                         user = await client.fetch_user(user_subreddit.user_id)
                                         post_url = f"https://reddit.com{submission.permalink}"
                                         await user.send(f"Deal found: {submission.title}\n{post_url}")
+                                        sent_submissions += 1
                                     except discord.HTTPException as e:
                                         logging.error(f"Error sending message to user {user_subreddit.user_id}: {e}")
+                            logging.info(f"For user {user_subreddit.discord_name} found {sent_submissions} entries for subreddit {subreddit_name}")
 
                     # Close the session after processing
                     session.close()
