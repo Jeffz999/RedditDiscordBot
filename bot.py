@@ -73,7 +73,8 @@ async def on_ready():
     
     if check_reddit_task is None or check_reddit_task.done():
         # If the task is not running or is completed, restart it
-        check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
+        logging.info("Created check reddit loop")
+        check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, int(CHECK_INTERVAL)))
 
 @bot.command()
 async def add(ctx, *arr):

@@ -103,7 +103,7 @@ class RedditMonitor:
         finally:
             session.close()
 
-    async def check_reddit(self, client, interval):
+    async def check_reddit(self, client, interval: int):
         await client.wait_until_ready()
         while not client.is_closed():
             try:
