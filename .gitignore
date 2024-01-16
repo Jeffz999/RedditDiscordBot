@@ -4,3 +4,4 @@ filters.csv
 app.log
 Extras
 environment.yml
+nohup.out

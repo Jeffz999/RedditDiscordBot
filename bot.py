@@ -61,6 +61,7 @@ check_reddit_task = None
 async def on_ready():
     global check_reddit_task
     print("Initialized")
+    logging.info("\n\n Initalized \n\n")
     channel_ids = os.getenv('CHANNEL_ID').split(',')
     
     for channel_id in channel_ids:
@@ -69,7 +70,10 @@ async def on_ready():
             await channel.send("Initialized. Use \"help\" for documentation")
         else:
             logging.error(f"\nerror channel {channel_id} failed to initialize\n")
-    check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
+    
+    if check_reddit_task is None or check_reddit_task.done():
+        # If the task is not running or is completed, restart it
+        check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
 
 @bot.command()
 async def add(ctx, *arr):
