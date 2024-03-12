@@ -16,7 +16,7 @@ jobs:
       name: Check out repository code
 
     - name: Build Docker image
-      run: docker build . -t seraph_docker_1:v1.0
+      run: docker build . -t seraph_docker_1:latest
 
     - name: Run tests using Docker
       run: docker run --rm seraph_docker_1 pytest 
