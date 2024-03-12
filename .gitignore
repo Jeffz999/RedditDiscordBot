@@ -5,3 +5,4 @@ app.log
 Extras
 environment.yml
 nohup.out
+docker_info.txt
