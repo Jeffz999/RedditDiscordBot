@@ -18,5 +18,7 @@ ARG MAMBA_DOCKERFILE_ACTIVATE=1
 # Set the PATH to include the micromamba binary
 ENV PATH="/root/micromamba/bin:${PATH}"
 
+ENV NEW_POSTS=100
+
 # Command to run tests
 CMD bash
