@@ -1,4 +1,7 @@
-name: Docker Image CI
+name: CI/CD Pipeline
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -15,8 +18,36 @@ jobs:
     - uses: actions/checkout@v3
       name: Check out repository code
 
-    - name: Build Docker image
-      run: docker build . -t seraph_docker_1:latest
+    - name: Pull Docker image
+      run: docker pull eatburger/seraph_docker_1:latest
 
     - name: Run tests using Docker
-      run: docker run --rm -e NEW_POSTS=100 seraph_docker_1 pytest
+      run: docker run --rm -e NEW_POSTS=100 eatburger/seraph_docker_1 pytest
+
+  deploy:
+    needs: build-and-test
+    runs-on: self-hosted # Ensure this targets your self-hosted runner
+    steps:
+    - uses: actions/checkout@v3
+      name: Check out repository code again
+
+    - name: SSH and Deploy to EC2 instance
+      env:
+        SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      run: |
+        # Save SSH key to a file and set permissions
+        echo "$SSH_KEY" > ssh_key.pem
+        chmod 600 ssh_key.pem
+
+        ssh-keyscan -H ec2-3-137-212-162.us-east-2.compute.amazonaws.com >> ~/.ssh/known_hosts
+
+        ssh -i ssh_key.pem ec2-3-137-212-162.us-east-2.compute.amazonaws.com '
+          docker login -u eatburger -p ${{ secrets.DOCKERHUB_PASSWORD }} && \
+          docker pull eatburger/seraph_docker_1:latest && \
+          docker stop seraph_docker_1 || true && \
+          docker rm seraph_docker_1 || true && \
+          docker run -d --name seraph_docker_1 eatburger/seraph_docker_1:latest
+        '
+
+        rm -f ssh_key.pem
+        '
