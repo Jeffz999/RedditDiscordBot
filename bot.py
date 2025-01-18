@@ -17,7 +17,7 @@ load_dotenv()
 REDDIT_CLIENT_ID = os.getenv('REDDIT_CLIENT_ID') 
 REDDIT_SECRET = os.getenv('REDDIT_SECRET')
 USER_AGENT = os.getenv('USER_AGENT')
-CHECK_INTERVAL = os.getenv('PING_TIMER')
+CHECK_INTERVAL = int(os.getenv('PING_TIMER'))
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 
 logging.basicConfig(level=logging.INFO, 
@@ -37,7 +37,7 @@ encoded_password = urllib.parse.quote_plus(PASSWORD)
 PORT = 3306
 
 # Replace 'mysql+mysqlconnector://<user>:<password>@<host>/<dbname>' with your actual database URL
-DATABASE_URL = f'mysql+mysqlconnector://{USER}:{encoded_password}@{HOST}:{PORT}/{SCHEMA}'
+DATABASE_URL = f'mysql+pymysql://{USER}:{encoded_password}@{HOST}:{PORT}/{SCHEMA}'
 
 engine = create_engine(DATABASE_URL, echo=True)
 Session = sessionmaker(bind=engine)
@@ -74,7 +74,7 @@ async def on_ready():
     if check_reddit_task is None or check_reddit_task.done():
         # If the task is not running or is completed, restart it
         logging.info("Created check reddit loop")
-        check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, int(CHECK_INTERVAL)))
+        check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
 
 @bot.command()
 async def add(ctx, *arr):
@@ -84,15 +84,11 @@ async def add(ctx, *arr):
         sum += int(elem)
     await ctx.send(f"result = {sum}")
     
-@bot.command(name='greet', help="greet then type 'who are you' 'who actually are you' or 'gbbrs are bad'")
+@bot.command(name='greet', help="greet then type 'who are you'")
 async def greet(ctx, *args):
     message = ' '.join(args).lower()
     if message == 'who are you' or message == 'who are you?':  # Check if the argument is 'hello'
         await ctx.send(responses.RAWLS_PASTA)
-    elif message == "who actually are you" or message == "who actually are you?":
-        await ctx.send(responses.RAWLS_WIKI)
-    elif message == "gbbrs are bad":
-        await ctx.send(responses.GBBR_BITCHING_PASTA)
     else:
         await ctx.send("and you too")
         

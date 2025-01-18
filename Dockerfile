@@ -1,24 +1,30 @@
 # Use the micromamba Docker image
-FROM mambaorg/micromamba:1.5.1
+FROM mambaorg/micromamba:2.0.5
 
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the environment.yml and your application to the working directory
+# Copy only environment.yml first to leverage Docker cache
 COPY environment.yml /tmp/environment.yml
-COPY . /app
 
-# Install the environment and perform cleanup
+# Install dependencies
 RUN micromamba install -y -n base -f /tmp/environment.yml && \
-    micromamba clean --all --yes
+    micromamba clean --all --yes && \
+    rm /tmp/environment.yml
 
-# Ensure Conda environment is activated for RUN commands
-ARG MAMBA_DOCKERFILE_ACTIVATE=1 
+# Ensure Conda environment is activated
+ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
-# Set the PATH to include the micromamba binary
+# Set environment variables
 ENV PATH="/root/micromamba/bin:${PATH}"
-
 ENV NEW_POSTS=100
 
-# Command to run tests
-CMD bash
+# Copy application code (after dependencies for better caching)
+COPY . /app
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000')" || exit 1
+
+# Specify the actual command to run your bot
+CMD ["python", "your_bot_file.py"]
