@@ -16,12 +16,13 @@ jobs:
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
-          
+          environment-name: discord_reddit_bot
+
       - name: Run Tests
+        shell: bash -el {0}
         run: |
-          eval "$(micromamba shell hook --shell bash)"
-          micromamba activate base
-          python -m pytest test_discord_bot.py test_reddit_moniter.py
+          micromamba activate discord_reddit_bot
+          python -m pytest test_reddit_moniter.py
 
   build-and-push:
     needs: test
