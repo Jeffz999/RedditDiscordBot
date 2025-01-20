@@ -7,6 +7,8 @@ WORKDIR /app
 # Copy only environment.yml first to leverage Docker cache
 COPY environment.yml /tmp/environment.yml
 
+RUN chmod 777 /tmp/environment.yml
+
 # Install dependencies
 RUN micromamba install -y -n base -f /tmp/environment.yml && \
     micromamba clean --all --yes && \
