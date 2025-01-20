@@ -20,6 +20,8 @@ jobs:
 
       - name: Run Tests
         shell: bash -el {0}
+        env:
+          NEW_POSTS: "100"
         run: |
           micromamba activate discord_reddit_bot
           python -m pytest test_reddit_moniter.py
