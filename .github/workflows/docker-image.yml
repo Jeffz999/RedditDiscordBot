@@ -19,6 +19,8 @@ jobs:
           
       - name: Run Tests
         run: |
+          eval "$(micromamba shell hook --shell bash)"
+          micromamba activate base
           python -m pytest test_discord_bot.py test_reddit_moniter.py
 
   build-and-push:
