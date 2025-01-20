@@ -17,9 +17,9 @@ ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
 # Set environment variables
 ENV PATH="/root/micromamba/bin:${PATH}"
-ENV NEW_POSTS=100
+ENV NEW_POSTS="100"
 ENV USER_AGENT="python:seraph.discord.filterbot:v1.0.0 (by /u/RajinChicken)"
-ENV PING_TIMER=300
+ENV PING_TIMER="300"
 
 # Copy application code (after dependencies for better caching)
 COPY . /app
