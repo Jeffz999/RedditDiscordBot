@@ -13,7 +13,7 @@ import logging
 
 import responses
 load_dotenv()
-
+#
 REDDIT_CLIENT_ID = os.getenv('REDDIT_CLIENT_ID') 
 REDDIT_SECRET = os.getenv('REDDIT_SECRET')
 USER_AGENT = os.getenv('USER_AGENT')
