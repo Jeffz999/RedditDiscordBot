@@ -42,7 +42,7 @@ DATABASE_URL = f'mysql+pymysql://{USER}:{encoded_password}@{HOST}:{PORT}/{SCHEMA
 engine = create_engine(DATABASE_URL, echo=True)
 Session = sessionmaker(bind=engine)
 
-Base = declarative_base()
+from reddit_monitor import Base
 
 # To create tables (if they don't exist)
 Base.metadata.create_all(engine)
