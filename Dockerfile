@@ -7,15 +7,13 @@ WORKDIR /app
 # Copy only environment.yml first to leverage Docker cache
 COPY environment.yml /tmp/environment.yml
 
-RUN chmod 777 /tmp/environment.yml
-
 # Install dependencies
-RUN micromamba install -y -n base -f /tmp/environment.yml && \
-    micromamba clean --all --yes && \
-    rm /tmp/environment.yml
+RUN micromamba create -y -n discord-bot -f /tmp/environment.yml && \
+    micromamba clean --all --yes
 
 # Ensure Conda environment is activated
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
+ENV ENV_NAME=discord-bot
 
 # Set environment variables
 ENV PATH="/root/micromamba/bin:${PATH}"
@@ -31,4 +29,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8000')" || exit 1
 
 # Specify the actual command to run your bot
-CMD ["python", "your_bot_file.py"]
+CMD ["python", "bot.py"]
