@@ -71,7 +71,7 @@ jobs:
               -e DB_HOST='${{ secrets.DB_HOST }}' \
               -e DB_USER='${{ secrets.DB_USER }}' \
               -e DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
-              -e DB_NAME='${{ secrets.DB_NAME }}' \
+              -e DB_SCHEMA='${{ secrets.DB_SCHEMA }}' \
               ${{ secrets.DOCKERHUB_USERNAME }}/seraph-docker2:latest"
 
             # Execute commands one by one
