@@ -43,7 +43,6 @@ PASSWORD = os.getenv('DB_PASSWORD')
 encoded_password = urllib.parse.quote_plus(PASSWORD) 
 PORT = 3306
 
-# Replace 'mysql+mysqlconnector://<user>:<password>@<host>/<dbname>' with your actual database URL
 DATABASE_URL = f'mysql+aiomysql://{USER}:{encoded_password}@{HOST}:{PORT}/{SCHEMA}'
 engine = create_async_engine(
     DATABASE_URL,
@@ -136,6 +135,11 @@ async def add_filter(ctx, *args):
         return
 
     subreddit, entry_name, *keywords = args
+    
+    if not subreddit.isalnum():
+            await ctx.send("Invalid subreddit name. Subreddit names should be alphanumeric.")
+            return
+    
     logging.info(f"\nCommand 'add_filter' invoked by {ctx.author} with arguments: subreddit={subreddit}, entry_name={entry_name}, keywords={keywords}\n")
     async def confirmation_check(message):
         return message.author == ctx.author and message.content.lower() in ["yes", "no"]
@@ -154,7 +158,7 @@ async def add_filter(ctx, *args):
             discord_username = ctx.author.name
 
             # Call add_filter with the Discord username
-            response = reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
+            response = await reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
             await ctx.send(response)
         else:
             await ctx.send("Filter addition cancelled.")
@@ -222,17 +226,15 @@ async def shutdown(ctx):
 
         # Close database connections
         try:
-            await async_engine.dispose()
+            # Fix: Use engine instead of async_engine
+            await engine.dispose()
             logger.info("Database connections closed successfully")
         except Exception as e:
             logger.error(f"Error closing database connections: {e}")
         
         # Close the bot
-        try:
-            await bot.close()
-            logger.info("Bot shutdown completed")
-        except Exception as e:
-            logger.error(f"Error during bot shutdown: {e}")
+        await bot.close()
+        logger.info("Bot shutdown completed")
             
     except Exception as e:
         logger.error(f"Error during shutdown process: {e}")

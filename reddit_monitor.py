@@ -40,7 +40,6 @@ class RedditMonitor:
         self.cache_timeout = cache_timeout
         self.max_posts = max_posts
         self.cache = SubredditCache(timeout=cache_timeout)
-        self.session_factory = session_factory
         
     async def initialize_reddit(self) -> asyncpraw.Reddit:
         """Initialize Reddit API client."""
@@ -70,11 +69,82 @@ class RedditMonitor:
                         session, user_sub.id, entry_name, keywords
                     )
                     
-                    return f"Filter '{entry_name}' added/updated for subreddit '{subreddit}'"
+                    return (f"Filter '{entry_name}' added/updated for subreddit '{subreddit}' "
+                           f"with keywords: {', '.join(entry.keyword_list)}")
                     
                 except Exception as e:
                     logger.error(f"Error adding filter: {e}")
+                    await session.rollback()
                     raise RedditMonitorError(f"Failed to add filter: {str(e)}")
+                
+                
+    async def remove_filter(self, user_id: str, subreddit: str, entry_name: str) -> str:
+        """Remove a filter for a user."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                try:
+                    # Find the user's subreddit subscription
+                    stmt = select(UserSubreddit).filter_by(
+                        user_id=user_id,
+                        subreddit=subreddit
+                    )
+                    result = await session.execute(stmt)
+                    user_sub = result.scalar_one_or_none()
+                    
+                    if not user_sub:
+                        return f"No filters found for subreddit '{subreddit}'"
+                    
+                    # Find the specific entry filter
+                    stmt = select(EntryFilter).filter_by(
+                        user_subreddit_id=user_sub.id,
+                        entry_name=entry_name
+                    )
+                    result = await session.execute(stmt)
+                    entry = result.scalar_one_or_none()
+                    
+                    if not entry:
+                        return f"Filter '{entry_name}' not found"
+                    
+                    # Remove the entry
+                    await session.delete(entry)
+                    
+                    # If no more entries, remove the user_subreddit too
+                    if not user_sub.entries:
+                        await session.delete(user_sub)
+                    
+                    return f"Filter '{entry_name}' removed from subreddit '{subreddit}'"
+                    
+                except Exception as e:
+                    logger.error(f"Error removing filter: {e}")
+                    await session.rollback()
+                    raise RedditMonitorError(f"Failed to remove filter: {str(e)}")
+
+    async def get_user_profile(self, user_id: str) -> str:
+        """Get user's profile showing all their filters."""
+        async with self.session_factory() as session:
+            try:
+                # Get all user's subreddit subscriptions
+                stmt = select(UserSubreddit).filter_by(user_id=user_id)
+                result = await session.execute(stmt)
+                user_subs = result.scalars().all()
+                
+                if not user_subs:
+                    return "No filters set up yet."
+                
+                profile = ["Your active filters:"]
+                for user_sub in user_subs:
+                    profile.append(f"\nSubreddit: r/{user_sub.subreddit}")
+                    for entry in user_sub.entries:
+                        keywords = entry.keyword_list
+                        profile.append(
+                            f"  - {entry.entry_name}: {', '.join(keywords)}"
+                        )
+                
+                return "\n".join(profile)
+                
+            except Exception as e:
+                logger.error(f"Error getting user profile: {e}")
+                raise RedditMonitorError(f"Failed to get profile: {str(e)}")
 
     async def check_subreddit(self, reddit: asyncpraw.Reddit, subreddit_name: str) -> List[asyncpraw.models.Submission]:
         """Fetch new posts from a subreddit."""    
@@ -126,7 +196,13 @@ class RedditMonitor:
         discord_client: discord.Client, 
         interval: int
     ) -> None:
-        """Main monitoring loop."""
+        """
+        Main monitoring loop that checks Reddit at specified intervals.
+        
+        Args:
+            discord_client: Discord bot client
+            interval: Time in seconds between Reddit checks
+        """
         while True:
             try:
                 async with self.initialize_reddit() as reddit:
@@ -134,6 +210,7 @@ class RedditMonitor:
             except Exception as e:
                 logger.error(f"Error in monitor loop: {e}")
             finally:
+                # Always wait the interval before next check
                 await asyncio.sleep(interval)
 
     # Private helper methods
