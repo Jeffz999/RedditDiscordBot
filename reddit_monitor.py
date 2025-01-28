@@ -11,9 +11,9 @@ import discord
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from .cache import SubredditCache
-from .models import UserSubreddit, EntryFilter
-from .exceptions import RedditMonitorError
+from cache import SubredditCache
+from models import UserSubreddit, EntryFilter
+from exceptions import RedditMonitorError
 
 logger = logging.getLogger(__name__)
 from typing import Callable, Awaitable
