@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta  
 from typing import List, Optional, Dict, Any
 
 import asyncpraw
@@ -304,8 +304,22 @@ class RedditMonitor:
                     # Get posts for this subreddit
                     posts = await self.check_subreddit(reddit, subreddit_name)
                     
-                    # Get all filters for this subreddit
-                    stmt = select(UserSubreddit).filter_by(subreddit=subreddit_name)
+                    if not posts:
+                        continue
+
+                    # Get latest post time
+                    latest_post_time = max(
+                        datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
+                        for post in posts
+                    )
+
+                    
+                    # Get UserSubreddits with entries
+                    stmt = (
+                        select(UserSubreddit)
+                        .options(selectinload(UserSubreddit.entries))
+                        .filter_by(subreddit=subreddit_name)
+                    )
                     result = await session.execute(stmt)
                     user_subs = result.scalars().all()
                     
@@ -313,24 +327,43 @@ class RedditMonitor:
                     for user_sub in user_subs:
                         for entry in user_sub.entries:
                             try:
-                                match_count = await self.process_matches(
-                                    discord_client,
-                                    posts,
-                                    user_sub,
-                                    entry
-                                )
-                                if match_count > 0:
-                                    logger.info(
-                                        f"Sent {match_count} matches to user "
-                                        f"{user_sub.discord_name} for {subreddit_name}"
-                                    )
-                            except RedditMonitorError as e:
-                                logger.error(
-                                    f"Error processing matches for user "
-                                    f"{user_sub.discord_name}: {e}"
-                                )
+                                # Initialize cutoff time for first-time checks
+                                cutoff = entry.last_check_at or datetime.min.replace(tzinfo=timezone.utc)
                                 
+                                # Only process posts newer than the last check
+                                relevant_posts = [
+                                    post for post in posts
+                                    if self._get_post_datetime(post) > cutoff
+                                ]
+                                
+                                if relevant_posts:
+                                    match_count = await self.process_matches(
+                                        discord_client, relevant_posts, user_sub, entry
+                                    )
+                                    
+                                    if match_count > 0:
+                                        logger.info(
+                                            f"Sent {match_count} matches to user "
+                                            f"{user_sub.discord_name} for {subreddit_name}"
+                                        )
+                                    
+                                    # Update timestamp after successful processing
+                                    entry.last_check_at = latest_post_time
+                                    logger.info(
+                                        f"Updated last_check_at for entry {entry.entry_name} "
+                                        f"to {latest_post_time}"
+                                    )
+
+                            except Exception as e:
+                                logger.error(
+                                    f"Error processing entry {entry.entry_name}: {e}"
+                                )
+                                raise  # Let the outer transaction handle rollback
+
                 except RedditMonitorError as e:
                     logger.error(f"Error processing subreddit {subreddit_name}: {e}")
+
+    def _get_post_datetime(self, post: asyncpraw.models.Submission) -> datetime:
+        """Convert post created_utc to timezone-aware datetime."""
+        return datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
             
-        
