@@ -4,10 +4,13 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 import asyncio
 
 import urllib.parse 
 from reddit_monitor import RedditMonitor
+from reddit_monitor import Base
+
 
 import logging
 
@@ -25,8 +28,12 @@ logging.basicConfig(level=logging.INFO,
                     filename='app.log', # if you want to log to a file
                     filemode='a') # Append mode
 
+logger = logging.getLogger(__name__)
+
+ 
 # Test logging
 logging.info("Logging has been configured")
+
 
 #alchemy
 SCHEMA = os.getenv('DB_SCHEMA')
@@ -36,16 +43,29 @@ PASSWORD = os.getenv('DB_PASSWORD')
 encoded_password = urllib.parse.quote_plus(PASSWORD) 
 PORT = 3306
 
-# Replace 'mysql+mysqlconnector://<user>:<password>@<host>/<dbname>' with your actual database URL
-DATABASE_URL = f'mysql+pymysql://{USER}:{encoded_password}@{HOST}:{PORT}/{SCHEMA}'
+DATABASE_URL = f'mysql+aiomysql://{USER}:{encoded_password}@{HOST}:{PORT}/{SCHEMA}'
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,  # SQL logging
+    pool_pre_ping=True,  # Connection health checks
+    pool_size=10,  # Maximum number of connections
+    pool_timeout=30,  # Time to wait for a connection from the pool
+    max_overflow=20  # Maximum number of connections above pool_size
+)
 
-engine = create_engine(DATABASE_URL, echo=True)
-Session = sessionmaker(bind=engine)
+async_session_factory = sessionmaker(
+    engine,
+    class_=AsyncSession,  # This makes sessions async-capable
+    expire_on_commit=False,  # Keeps objects usable after commit
+    autoflush=False  # More explicit control over when SQL is executed
+)
 
-from reddit_monitor import Base
+# Create an async function to initialize tables
+async def init_db():
+    async with engine.begin() as conn:
+        # This creates tables asynchronously
+        await conn.run_sync(Base.metadata.create_all)
 
-# To create tables (if they don't exist)
-Base.metadata.create_all(engine)
 
 
 # Bot Setup
@@ -53,28 +73,43 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='$', intents=intents)
 
-reddit_monitor = RedditMonitor(REDDIT_CLIENT_ID, REDDIT_SECRET, USER_AGENT, engine, Session)
+# Initialize RedditMonitor with correct session factory
+reddit_monitor = RedditMonitor(
+    REDDIT_CLIENT_ID, 
+    REDDIT_SECRET, 
+    USER_AGENT, 
+    async_session_factory  # Pass the correct session factory
+)
 
 check_reddit_task = None
 
 @bot.event
 async def on_ready():
     global check_reddit_task
-    print("Initialized")
-    logging.info("\n\n Initalized \n\n")
-    channel_ids = os.getenv('CHANNEL_ID').split(',')
     
-    for channel_id in channel_ids:
-        channel = bot.get_channel(int(channel_id.strip()))
-        if channel:
-            await channel.send("Initialized. Use \"help\" for documentation")
-        else:
-            logging.error(f"\nerror channel {channel_id} failed to initialize\n")
-    
-    if check_reddit_task is None or check_reddit_task.done():
-        # If the task is not running or is completed, restart it
-        logging.info("Created check reddit loop")
-        check_reddit_task = bot.loop.create_task(reddit_monitor.check_reddit(bot, CHECK_INTERVAL))
+    try:
+        await init_db()
+        print("Database initialized")
+        
+        print("Initialized")
+        logging.info("\n\n Initialized \n\n")
+        
+        channel_ids = os.getenv('CHANNEL_ID').split(',')
+        
+        for channel_id in channel_ids:
+            channel = bot.get_channel(int(channel_id.strip()))
+            if channel:
+                await channel.send("Initialized. Use \"help\" for documentation")
+            else:
+                logging.error(f"\nerror channel {channel_id} failed to initialize\n")
+        
+        if check_reddit_task is None or check_reddit_task.done():
+            check_reddit_task = bot.loop.create_task(
+                reddit_monitor.monitor_loop(bot, CHECK_INTERVAL)
+            )
+    except Exception as e:
+        logging.error(f"Initialization error: {e}")
+        # Consider appropriate error handling here
 
 @bot.command()
 async def add(ctx, *arr):
@@ -100,6 +135,11 @@ async def add_filter(ctx, *args):
         return
 
     subreddit, entry_name, *keywords = args
+    
+    if not subreddit.isalnum():
+            await ctx.send("Invalid subreddit name. Subreddit names should be alphanumeric.")
+            return
+    
     logging.info(f"\nCommand 'add_filter' invoked by {ctx.author} with arguments: subreddit={subreddit}, entry_name={entry_name}, keywords={keywords}\n")
     async def confirmation_check(message):
         return message.author == ctx.author and message.content.lower() in ["yes", "no"]
@@ -118,7 +158,7 @@ async def add_filter(ctx, *args):
             discord_username = ctx.author.name
 
             # Call add_filter with the Discord username
-            response = reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
+            response = await reddit_monitor.add_filter(str(ctx.author.id), discord_username, subreddit, entry_name, keywords)
             await ctx.send(response)
         else:
             await ctx.send("Filter addition cancelled.")
@@ -149,7 +189,7 @@ async def remove_filter(ctx, subreddit, entry_name):
         # Check the user's response
         if confirmation_response.content.lower() == "yes":
             # Call remove_filter
-            response = reddit_monitor.remove_filter(str(ctx.author.id), subreddit, entry_name)
+            response = await reddit_monitor.remove_filter(str(ctx.author.id), subreddit, entry_name)
             await ctx.send(response)
         else:
             await ctx.send("Filter removal cancelled.")
@@ -171,24 +211,34 @@ async def show_profile(ctx):
 async def shutdown(ctx):
     """Shuts down the bot. Only the bot owner can use this command."""
     global check_reddit_task
-    await ctx.send("Shutting down...")
-
-    # Cancel the check_reddit task
-    if check_reddit_task and not check_reddit_task.done():
-        check_reddit_task.cancel()
-        try:
-            await check_reddit_task  # Await the task to handle any exceptions
-        except asyncio.CancelledError:
-            await ctx.send("Background tasks have been cancelled.")  # Notify that tasks are cancelled
-
     try:
-        await bot.close()
-    except asyncio.CancelledError:
-        # This block will handle CancelledError raised by bot.close()
-        pass  # Optionally, log this event or perform other cleanup actions
+        await ctx.send("Shutting down...")
+        
+        # Cancel the check_reddit task
+        if check_reddit_task and not check_reddit_task.done():
+            check_reddit_task.cancel()
+            try:
+                await check_reddit_task
+            except asyncio.CancelledError:
+                logger.info("Background task cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error cancelling background task: {e}")
 
-    # Additional logging or cleanup can go here if needed
-    print("Bot shutdown completed.")
+        # Close database connections
+        try:
+            # Fix: Use engine instead of async_engine
+            await engine.dispose()
+            logger.info("Database connections closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing database connections: {e}")
+        
+        # Close the bot
+        await bot.close()
+        logger.info("Bot shutdown completed")
+            
+    except Exception as e:
+        logger.error(f"Error during shutdown process: {e}")
+        await ctx.send("Error during shutdown. Check logs for details.")
 
 
 @shutdown.error

@@ -17,8 +17,8 @@ ENV ENV_NAME=discord-bot
 
 # Set environment variables
 ENV PATH="/root/micromamba/bin:${PATH}"
-ENV NEW_POSTS="50"
-ENV USER_AGENT="python:seraph.discord.filterbot:v1.0.0 (by /u/RajinChicken)"
+ENV NEW_POSTS="10"
+ENV USER_AGENT="python:seraph.discord.filterbot:v1.1.0 (by /u/RajinChicken)"
 ENV PING_TIMER="600"
 
 # Copy application code (after dependencies for better caching)

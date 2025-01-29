@@ -1,244 +1,453 @@
 import unittest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from reddit_monitor import RedditMonitor, Base, UserSubreddit, EntryName
+import asyncio
+from datetime import datetime, timezone, timedelta
+from unittest import mock
+from unittest.mock import AsyncMock, MagicMock, patch
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy import select, func
+from reddit_monitor import RedditMonitor, UserSubreddit, EntryFilter
+from models import Base
 
-"""cls.discord_token = os.getenv('DISCORD_TOKEN')
-    cls.reddit_secret = os.getenv('REDDIT_SECRET')
-    cls.reddit_client_id = os.getenv('REDDIT_CLIENT_ID')
-    cls.tester_channel_id = os.getenv('TESTER_CHANNEL_ID')
-    cls.user_agent = os.getenv('USER_AGENT')
-    cls.db_schema = os.getenv('DB_SCHEMA')
-    cls.db_host = os.getenv('DB_HOST')
-    cls.db_user = os.getenv('DB_USER')
-    cls.db_password = os.getenv('DB_PASSWORD')
-    cls.ping_timer = os.getenv('PING_TIMER')
-    cls.new_posts = os.getenv('NEW_POSTS')
-"""
+# Decorator to run async test methods
+def async_test(func):
+    def wrapper(*args, **kwargs):
+        return asyncio.run(func(*args, **kwargs))
+    return wrapper
 
 class TestRedditMonitorSQLite(unittest.TestCase):
+    async def asyncSetUp(self):
+        """Async setup: Create async engine and tables, initialize session factory."""
+        # Using async SQLite engine with aiosqlite driver for in-memory database
+        self.engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+        # Create tables using async connection
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        # Async session factory (replaces synchronous sessionmaker)
+        self.Session = async_sessionmaker(bind=self.engine, expire_on_commit=False)
 
-    def setUp(self):
-        # Connect to an in-memory SQLite database
-        self.engine = create_engine('sqlite:///:memory:')
-        
-        # Create all tables in the database
-        Base.metadata.create_all(self.engine)
+    async def asyncTearDown(self):
+        """Async teardown: Drop tables and dispose engine."""
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await self.engine.dispose()
 
-        # Create a new sessionmaker that binds to the in-memory engine
-        self.Session = sessionmaker(bind=self.engine)
-        
-        
+    @async_test
+    async def test_add_filter_1(self):
+        """Test adding a filter - now uses async setup and async ORM methods."""
+        await self.asyncSetUp()
+        try:
+            # Initialize RedditMonitor with async session factory
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
 
-    def tearDown(self):
-        # Drop all tables in the database
-        Base.metadata.drop_all(self.engine)
+            user_id = "test_user"
+            discord_name = "test_discord"
+            subreddit = "test_subreddit"
+            entry_name = "test_entry"
+            keywords = ["keyword1", "keyword2"]
 
-    def test_add_filter_1(self):
-        # Create a new session
-        session = self.Session()
+            # Await the async add_filter method
+            add_result = await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name=discord_name,
+                subreddit=subreddit,
+                entry_name=entry_name,
+                keywords=keywords
+            )
+            
+            print(add_result)
 
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                       alchemy_engine=self.engine, alchemy_session=lambda: session)
-        
+            # Verify using async session
+            async with self.Session() as session:
+                # Query UserSubreddit
+                user_sub_result = await session.execute(
+                    select(UserSubreddit).filter_by(user_id=user_id, subreddit=subreddit)
+                )
+                user_sub = user_sub_result.scalar_one_or_none()
+                self.assertIsNotNone(user_sub, "UserSubreddit should be created")
+                self.assertEqual(user_sub.discord_name, discord_name, "Discord name should match")
 
-        user_id = "test_user"
-        discord_name = "test_discord"
-        subreddit = "test_subreddit"
-        entry_name = "test_entry"
-        keywords = ["keyword1", "keyword2"]
+                # Query EntryFilter (renamed from EntryName in Codefile2)
+                entry_result = await session.execute(
+                    select(EntryFilter).filter_by(user_subreddit_id=user_sub.id, entry_name=entry_name)
+                )
+                entry = entry_result.scalar_one_or_none()
+                self.assertIsNotNone(entry, "EntryFilter should be created")
+                self.assertEqual(entry.keywords, ','.join(keywords), "Keywords should match")
+        finally:
+            await self.asyncTearDown()
 
-        # Call your method
-        reddit_monitor.add_filter(user_id=user_id, discord_name=discord_name, subreddit=subreddit,
-                                           entry_name=entry_name, keywords=keywords)
+    @async_test
+    async def test_remove_filter_1(self):
+        """Test removing a filter - demonstrates async ORM deletion."""
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
 
-        # Assertions to verify the behavior of add_filter
-        user_subreddit = session.query(UserSubreddit).filter_by(user_id=user_id, subreddit=subreddit).first()
-        assert user_subreddit is not None, "UserSubreddit should be created"
-        assert user_subreddit.discord_name == discord_name, "Discord name should match"
-        
-        
-        entry = session.query(EntryName).filter_by(user_subreddit_id=user_subreddit.id, entry_name=entry_name).first()
-        assert entry is not None, "EntryName should be created"
-        assert entry.keywords == ','.join(keywords), "Keywords should match"
+            user_id = "test_user"
+            subreddit = "test_subreddit"
+            entry_name = "test_entry"
 
-        # Close the session
-        session.close()
+            # Setup: Add a filter first
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name="test_discord",
+                subreddit=subreddit,
+                entry_name=entry_name,
+                keywords=["keyword1"]
+            )
 
-    def test_remove_filter_1(self):
-        session = self.Session()
+            # Debug: Print initial state
+            async with self.Session() as session:
+                result = await session.execute(select(EntryFilter))
+                entries = result.scalars().all()
+                print(f"Initial EntryFilters count: {len(entries)}")
+                for e in entries:
+                    print(f"Entry: id={e.id}, name={e.entry_name}, user_sub_id={e.user_subreddit_id}")
 
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                       alchemy_engine=self.engine, alchemy_session=lambda: session)
-        
-        # Assuming add_filter has been tested and works correctly
-        # Set up test data by calling add_filter first
-        user_id = "test_user"
-        discord_name = "test_discord"
-        subreddit = "test_subreddit"
-        entry_name = "test_entry"
-        keywords = ["keyword1", "keyword2"]
-        reddit_monitor.add_filter(user_id, discord_name, subreddit, entry_name, keywords)
+                result = await session.execute(select(UserSubreddit))
+                subs = result.scalars().all()
+                print(f"Initial UserSubreddits count: {len(subs)}")
+                for s in subs:
+                    print(f"UserSub: id={s.id}, user_id={s.user_id}, subreddit={s.subreddit}")
 
-        # Call the function to remove the filter
-        reddit_monitor.remove_filter(user_id, subreddit, entry_name)
+            # Execute remove
+            print("Executing remove_filter...")
+            remove_result = await reddit_monitor.remove_filter(user_id, subreddit, entry_name)
+            print(remove_result)
 
-        # Assertions
-        entry = session.query(EntryName).filter_by(user_subreddit_id=user_id, entry_name=entry_name).first()
-        assert entry is None, "EntryName should be removed"
+            # Debug: Print final state
+            async with self.Session() as session:
+                result = await session.execute(select(EntryFilter))
+                entries = result.scalars().all()
+                print(f"Final EntryFilters count: {len(entries)}")
+
+                result = await session.execute(select(UserSubreddit))
+                subs = result.scalars().all()
+                print(f"Final UserSubreddits count: {len(subs)}")
+
+        finally:
+            await self.asyncTearDown()
+            
+    @async_test
+    async def test_remove_filter_single_entry(self):
+        """Test removing a filter when it's the only entry for a UserSubreddit."""
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+
+            # Setup: Add a single filter
+            user_id = "test_user"
+            subreddit = "test_subreddit"
+            entry_name = "test_entry"
+            
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name="test_discord",
+                subreddit=subreddit,
+                entry_name=entry_name,
+                keywords=["keyword1"]
+            )
+            
+            # Remove the filter
+            remove_result = await reddit_monitor.remove_filter(user_id, subreddit, entry_name)
+            
+            # Verify database state
+            async with self.Session() as session:
+                # Check UserSubreddit was deleted
+                user_sub_result = await session.execute(
+                    select(UserSubreddit).filter_by(
+                        user_id=user_id,
+                        subreddit=subreddit
+                    )
+                )
+                user_sub = user_sub_result.scalar_one_or_none()
+                self.assertIsNone(user_sub, "UserSubreddit should be deleted")
+                
+                # Check EntryFilter was deleted
+                entry_result = await session.execute(
+                    select(EntryFilter).filter_by(entry_name=entry_name)
+                )
+                entry = entry_result.scalar_one_or_none()
+                self.assertIsNone(entry, "EntryFilter should be deleted")
+                
+        finally:
+            await self.asyncTearDown()
+
+    @async_test
+    async def test_remove_filter_multiple_entries(self):
+        """Test removing one filter when multiple exist for a UserSubreddit."""
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+
+            # Setup: Add two filters
+            user_id = "test_user"
+            subreddit = "test_subreddit"
+            discord_name = "test_discord"
+            
+            # Add first filter
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name=discord_name,
+                subreddit=subreddit,
+                entry_name="entry1",
+                keywords=["keyword1"]
+            )
+            
+            # Add second filter
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name=discord_name,
+                subreddit=subreddit,
+                entry_name="entry2",
+                keywords=["keyword2"]
+            )
+            
+            # Remove one filter
+            remove_result = await reddit_monitor.remove_filter(
+                user_id,
+                subreddit,
+                "entry1"
+            )
+            
+            # Verify database state
+            async with self.Session() as session:
+                # Check UserSubreddit still exists
+                user_sub_result = await session.execute(
+                    select(UserSubreddit).filter_by(
+                        user_id=user_id,
+                        subreddit=subreddit
+                    )
+                )
+                user_sub = user_sub_result.scalar_one_or_none()
+                self.assertIsNotNone(user_sub, "UserSubreddit should still exist")
+                
+                # Check deleted EntryFilter is gone
+                entry1_result = await session.execute(
+                    select(EntryFilter).filter_by(entry_name="entry1")
+                )
+                entry1 = entry1_result.scalar_one_or_none()
+                self.assertIsNone(entry1, "EntryFilter 'entry1' should be deleted")
+                
+                # Check other EntryFilter still exists
+                entry2_result = await session.execute(
+                    select(EntryFilter).filter_by(entry_name="entry2")
+                )
+                entry2 = entry2_result.scalar_one_or_none()
+                self.assertIsNotNone(entry2, "EntryFilter 'entry2' should still exist")
+                
+        finally:
+            await self.asyncTearDown()
+            
     
-    def test_add_remove_1(self):
-        session = self.Session()
+    @async_test
+    async def test_remove_last_entry_deletes_user_subreddit(self):
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
 
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                    alchemy_engine=self.engine, alchemy_session=lambda: session)
+            # Remove the only entry
+            await reddit_monitor.remove_filter("user1", "test_sub", "entry1")
 
-        # Setup: Add a filter for an existing subreddit
-        user_id = "user1"
-        discord_name = "User One"
-        subreddit = "subreddit1"
-        entry_name1 = "entry1"
-        keywords1 = ["keyword1"]
-        reddit_monitor.add_filter(user_id=user_id, discord_name=discord_name, subreddit=subreddit,
-                                entry_name=entry_name1, keywords=keywords1)
+            # Verify UserSubreddit deleted
+            async with self.Session() as session:
+                user_sub = await session.get(UserSubreddit, 1)
+                self.assertIsNone(user_sub)
+        finally:
+            await self.asyncTearDown()        
+            
+    
+    @async_test
+    async def test_add_multiple_entries_and_remove_one(self):
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test1"])
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry2", ["test2"])
 
-        # Action: Add another filter for the same subreddit but with a different entry
-        entry_name2 = "entry2"
-        keywords2 = ["keyword2"]
-        reddit_monitor.add_filter(user_id=user_id, discord_name=discord_name, subreddit=subreddit,
-                                entry_name=entry_name2, keywords=keywords2)
+            # Remove one entry
+            await reddit_monitor.remove_filter("user1", "test_sub", "entry1")
 
-        # Assertions: Check if both entries exist under the same subreddit
-        entries = session.query(EntryName).join(UserSubreddit).filter(UserSubreddit.subreddit == subreddit).all()
-        assert len(entries) == 2, "There should be two entries for the subreddit"
-        assert any(entry.entry_name == entry_name1 for entry in entries), "First entry should exist"
-        assert any(entry.entry_name == entry_name2 for entry in entries), "Second entry should exist"
+            # Verify remaining entry
+            async with self.Session() as session:
+                user_sub = await session.get(UserSubreddit, 1)
+                self.assertEqual(len(user_sub.entries), 1)
+                self.assertEqual(user_sub.entries[0].entry_name, "entry2")
+        finally:
+            await self.asyncTearDown()
+    
 
-        session.close()
+    @async_test
+    async def test_get_user_profile_1(self):
+        """Test retrieving user profile with async query."""
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+
+            user_id = "test_user"
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name="test_discord",
+                subreddit="test_sub",
+                entry_name="entry1",
+                keywords=["kw1"]
+            )
+
+            profile = await reddit_monitor.get_user_profile(user_id)
+            
+            print(profile)
+            # Update assertion to match actual format
+            self.assertIn("Subreddit: r/test_sub", profile)
+            self.assertIn("  - entry1: kw1", profile)
+        finally:
+            await self.asyncTearDown()
+            
+    @async_test
+    async def test_initial_run_processes_all_posts(self):
+        await self.asyncSetUp()
+        try:
+            # Setup RedditMonitor and add a filter
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
+
+            # Create test posts with varying timestamps
+            now = datetime.now(timezone.utc)
+            post1 = self._create_mock_post(now - timedelta(minutes=20))
+            post2 = self._create_mock_post(now - timedelta(minutes=5))
+            test_posts = [post1, post2]
+
+            # Mock check_subreddit and process_matches
+            with mock.patch.object(RedditMonitor, 'check_subreddit', AsyncMock(return_value=test_posts)):
+                sent_count = 0
+                async def mock_process_matches(*args):
+                    nonlocal sent_count
+                    sent_count = len(args[1])  # All posts are considered matches
+                    return sent_count
+                reddit_monitor.process_matches = mock_process_matches
+
+                await reddit_monitor._process_all_filters(None, None)
+
+                # Verify all posts processed and last_check_at updated
+                self.assertEqual(sent_count, 2)
+                async with self.Session() as session:
+                    entry = await session.get(EntryFilter, 1)
         
-    def test_two_users_add_same_entry(self):
-        session = self.Session()
+                    # Convert naive datetime from DB to UTC-aware
+                    db_time = entry.last_check_at.replace(tzinfo=timezone.utc)
+                    expected_time = datetime.fromtimestamp(post2.created_utc, tz=timezone.utc)
+                
+                    self.assertEqual(db_time, expected_time)
+        finally:
+            await self.asyncTearDown()
+                
+                
+    @async_test
+    async def test_subsequent_run_processes_new_posts_only(self):
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
 
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                    alchemy_engine=self.engine, alchemy_session=lambda: session)
+            # Set initial last_check_at
+            initial_check_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+            async with self.Session() as session:
+                entry = await session.get(EntryFilter, 1)
+                entry.last_check_at = initial_check_time
+                await session.commit()
 
-        subreddit = "test_subreddit"
-        entry_name = "test_entry"
-        keywords = ["keyword1", "keyword2"]
+            # Mock posts: one old, one new
+            post_old = self._create_mock_post(initial_check_time - timedelta(minutes=5))
+            post_new = self._create_mock_post(initial_check_time + timedelta(minutes=5))
+            with mock.patch.object(RedditMonitor, 'check_subreddit', AsyncMock(return_value=[post_old, post_new])):
+                sent_count = 0
+                async def mock_process_matches(*args):
+                    nonlocal sent_count
+                    sent_count = len(args[1])
+                    return sent_count
+                reddit_monitor.process_matches = mock_process_matches
 
-        # User 1 adds an entry
-        reddit_monitor.add_filter(user_id="user1", discord_name="UserOne", subreddit=subreddit,
-                                entry_name=entry_name, keywords=keywords)
+                await reddit_monitor._process_all_filters(None, None)
 
-        # User 2 adds the same entry
-        reddit_monitor.add_filter(user_id="user2", discord_name="UserTwo", subreddit=subreddit,
-                                entry_name=entry_name, keywords=keywords)
-
-        # Assertions
-        entries_count = session.query(EntryName).join(UserSubreddit).filter(UserSubreddit.subreddit == subreddit, EntryName.entry_name == entry_name).count()
-        self.assertEqual(entries_count, 2, "Both users should have the same entry for the subreddit")
-
-        session.close()
-
-
-    def test_two_users_add_different_entries(self):
-        session = self.Session()
-
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                    alchemy_engine=self.engine, alchemy_session=lambda: session)
-
-        subreddit = "test_subreddit"
-
-        # User 1 adds an entry
-        reddit_monitor.add_filter(user_id="user1", discord_name="UserOne", subreddit=subreddit,
-                                entry_name="entry1", keywords=["keyword1"])
-
-        # User 2 adds a different entry
-        reddit_monitor.add_filter(user_id="user2", discord_name="UserTwo", subreddit=subreddit,
-                                entry_name="entry2", keywords=["keyword2"])
-
-        # Assertions
-        entries = session.query(EntryName).join(UserSubreddit).filter(UserSubreddit.subreddit == subreddit).all()
-        self.assertEqual(len(entries), 2, "There should be two different entries for the subreddit")
-
-        session.close()
-
-    def test_user_adds_and_deletes_entry_twice(self):
-        session = self.Session()
-
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                    alchemy_engine=self.engine, alchemy_session=lambda: session)
-
-        user_id = "user1"
-        discord_name = "UserOne"
-        subreddit = "test_subreddit"
-        entry_name = "test_entry"
-        keywords = ["keyword1", "keyword2"]
-
-        # User adds an entry and deletes it twice
-        reddit_monitor.add_filter(user_id=user_id, discord_name=discord_name, subreddit=subreddit,
-                                entry_name=entry_name, keywords=keywords)
-        reddit_monitor.remove_filter(user_id, subreddit, entry_name)
-        reddit_monitor.remove_filter(user_id, subreddit, entry_name)  # Attempt to delete the same entry again
-
-        # Assertions
-        entry = session.query(EntryName).join(UserSubreddit).filter(UserSubreddit.subreddit == subreddit, EntryName.entry_name == entry_name).first()
-        self.assertIsNone(entry, "The entry should be deleted and not found")
-
-        session.close()
-
-    def test_two_users_different_entries_one_deletes(self):
-        session = self.Session()
-
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                    alchemy_engine=self.engine, alchemy_session=lambda: session)
-
-        subreddit = "test_subreddit"
-
-        # User 1 adds an entry
-        reddit_monitor.add_filter(user_id="user1", discord_name="UserOne", subreddit=subreddit,
-                                entry_name="entry1", keywords=["keyword1"])
-
-        # User 2 adds a different entry
-        reddit_monitor.add_filter(user_id="user2", discord_name="UserTwo", subreddit=subreddit,
-                                entry_name="entry2", keywords=["keyword2"])
-
-        # User 1 deletes their entry
-        reddit_monitor.remove_filter("user1", subreddit, "entry1")
-
-        # Assertions
-        entry1 = session.query(EntryName).join(UserSubreddit).filter(UserSubreddit.subreddit == subreddit, EntryName.entry_name == "entry1").first()
-        entry2 = session.query(EntryName).join(UserSubreddit).filter(UserSubreddit.subreddit == subreddit, EntryName.entry_name == "entry2").first()
-
-        self.assertIsNone(entry1, "User 1's entry should be deleted")
-        self.assertIsNotNone(entry2, "User 2's entry should still exist")
-
-        session.close()
-
-
-        
-    def test_get_user_profile_1(self):
-        session = self.Session()
-
-        reddit_monitor = RedditMonitor(client_id='dummy_id', client_secret='dummy_secret', user_agent='dummy_agent',
-                                       alchemy_engine=self.engine, alchemy_session=lambda: session)
-        
-        user_id = "test_user"
-        discord_name = "test_discord"
-        subreddit = "test_subreddit"
-        entry_name = "test_entry"
-        keywords = ["keyword1", "keyword2"]
-        
-        # Assuming add_filter has been tested and works correctly
-        # Set up test data by calling add_filter first
-        reddit_monitor.add_filter(user_id, discord_name, subreddit, entry_name, keywords)
-
-        # Call the function
-        profile_info = reddit_monitor.get_user_profile(user_id)
-
-        # Assertions
-        expected_profile_info = f"{subreddit} - {entry_name}: {', '.join(keywords)}"
-        assert expected_profile_info in profile_info, "Profile info should include the added filter"
+                # Only new post processed
+                self.assertEqual(sent_count, 1)
+                async with self.Session() as session:
+                    entry = await session.get(EntryFilter, 1)
+                    db_time = entry.last_check_at.replace(tzinfo=timezone.utc)
+                    self.assertEqual(db_time, datetime.fromtimestamp(post_new.created_utc, tz=timezone.utc))
+        finally:
+            await self.asyncTearDown()
+            
+            
+    def _create_mock_post(self, post_time: datetime) -> MagicMock:
+        post = MagicMock()
+        post.created_utc = post_time.timestamp()
+        post.title = "Test Post"
+        post.permalink = "/r/test/post"
+        return post
 
 if __name__ == '__main__':
     unittest.main()

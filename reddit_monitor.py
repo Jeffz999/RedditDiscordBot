@@ -1,184 +1,375 @@
+from __future__ import annotations
+
 import asyncio
+import logging
+from datetime import datetime, timezone, timedelta  
+from typing import List, Optional, Dict, Any
+
 import asyncpraw
 import asyncprawcore
-import logging
 import discord
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select
 
-from collections import defaultdict
+from cache import SubredditCache
+from models import UserSubreddit, EntryFilter
+from exceptions import RedditMonitorError
 
-from sqlalchemy import Column, Integer, String, ForeignKey, Text
-from sqlalchemy.orm import relationship, declarative_base
+logger = logging.getLogger(__name__)
+from typing import Callable, Awaitable
 
-from dotenv import load_dotenv
-import os
-load_dotenv()
 
-NEW_POSTS = int(os.getenv('NEW_POSTS'))
-
-Base = declarative_base()
-
-class UserSubreddit(Base):
-    __tablename__ = 'UserSubreddit'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(String(255), nullable=False)
-    discord_name = Column(String(255))
-    subreddit = Column(String(255), nullable=False)
-    entries = relationship("EntryName", back_populates="user_subreddit")
-
-class EntryName(Base):
-    __tablename__ = 'EntryNames'
-    id = Column(Integer, primary_key=True)
-    user_subreddit_id = Column(Integer, ForeignKey('UserSubreddit.id'))
-    entry_name = Column(String(255), nullable=False)
-    keywords = Column(Text)
-    user_subreddit = relationship("UserSubreddit", back_populates="entries")
+AsyncSessionFactory = Callable[[], Awaitable[AsyncSession]]
 
 class RedditMonitor:
-    def __init__(self, client_id, client_secret, user_agent, alchemy_engine, alchemy_session):
+    """Monitors Reddit subreddits for matching posts based on user filters."""
+    
+    def __init__(
+        self, 
+        client_id: str,
+        client_secret: str,
+        user_agent: str,
+        session_factory: AsyncSessionFactory,
+        cache_timeout: int = 600,
+        max_posts: int = 100
+    ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.user_agent = user_agent
-        self.alchemy_engine = alchemy_engine
-        self.alchemy_session = alchemy_session
+        self.session_factory = session_factory
+        self.cache_timeout = cache_timeout
+        self.max_posts = max_posts
+        self.cache = SubredditCache(timeout=cache_timeout)
         
-        self.subreddit_cache = defaultdict(list)
+    async def initialize_reddit(self) -> asyncpraw.Reddit:
+        """Initialize Reddit API client."""
+        return asyncpraw.Reddit(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            user_agent=self.user_agent
+        )
 
-    def add_filter(self, user_id: str, discord_name: str, subreddit: str, entry_name: str, keywords):
-        session = self.alchemy_session()
-        try:
-            # Check if the combination of user and subreddit exists
-            user_subreddit = session.query(UserSubreddit).filter_by(user_id=user_id, subreddit=subreddit).first()
-            if not user_subreddit:
-                # Create a new UserSubreddit entry with the Discord name
-                user_subreddit = UserSubreddit(user_id=user_id, discord_name=discord_name, subreddit=subreddit)
-                session.add(user_subreddit)
-            else:
-                # Optionally, update the discord_name if it's different
-                if user_subreddit.discord_name != discord_name:
-                    user_subreddit.discord_name = discord_name
-
-            # Check if the entry name exists under this user and subreddit
-            entry = session.query(EntryName).filter_by(user_subreddit_id=user_subreddit.id, entry_name=entry_name).first()
-            if not entry:
-                entry = EntryName(user_subreddit_id=user_subreddit.id, entry_name=entry_name, keywords=','.join(keywords))
-                session.add(entry)
-            else:
-                # Update the keywords if the entry already exists
-                entry.keywords = ','.join(keywords)
-
-            session.commit()
-            
-            logging.info(f"\nSuccessfully added/updated filter with subreddit '{subreddit}' for user '{user_id}' with entry name '{entry_name}'\n")
-            
-            return f"Filter '{entry_name}' added/updated for subreddit '{subreddit}' for user '{user_id}' with Discord name '{discord_name}'"
-        except Exception as e:
-            logging.error(f"Error adding/updating filter: {e}")
-            return "Error occurred while adding/updating filter."
-        finally:
-            session.close()
-
-    
-    def remove_filter(self, user_id:str, subreddit:str, entry_name):
-        session = self.alchemy_session()
-        try:
-            # Find the filter
-            user_subreddit = session.query(UserSubreddit).filter_by(user_id=user_id, subreddit=subreddit).first()
-            if not user_subreddit:
-                return f"No such filter found for subreddit '{subreddit}'"
-
-            entry = session.query(EntryName).filter_by(user_subreddit_id=user_subreddit.id, entry_name=entry_name).first()
-            if not entry:
-                return f"No such filter found with entry name '{entry_name}'"
-
-            # Remove the filter
-            session.delete(entry)
-            session.commit()
-            
-            logging.info(f"\nSuccessfully removed filter with subreddit '{subreddit}' for user '{user_id}' with entry name '{entry_name}'\n")
-            
-            return f"Filter '{entry_name}' removed for subreddit '{subreddit}'"
-        except Exception as e:
-            logging.error(f"Error removing filter: {e}")
-            return "Error occurred while removing filter."
-        finally:
-            session.close()
-
-    async def check_reddit(self, client, interval: int):
-        await client.wait_until_ready()
-        while not client.is_closed():
-            try:
-                async with asyncpraw.Reddit(client_id=self.client_id, 
-                                            client_secret=self.client_secret, 
-                                            user_agent=self.user_agent) as reddit:
-                    session = self.alchemy_session()
-                    user_subreddits = session.query(UserSubreddit).order_by(UserSubreddit.subreddit).all()
+    async def add_filter(
+        self, 
+        user_id: str, 
+        discord_name: str, 
+        subreddit: str, 
+        entry_name: str, 
+        keywords: List[str]
+    ) -> str:
+        """Add or update a filter for a user."""
+        async with self.session_factory() as session:
+            async with session.begin():  # Proper transaction management
+                try:
+                    user_sub = await self._get_or_create_user_subreddit(
+                        session, user_id, discord_name, subreddit
+                    )
                     
-                    #for every row in the table
-                    for user_subreddit in user_subreddits:
-                        subreddit_name = user_subreddit.subreddit
+                    entry = await self._get_or_create_entry_filter(
+                        session, user_sub.id, entry_name, keywords
+                    )
+                    
+                    return (f"Filter '{entry_name}' added/updated for subreddit '{subreddit}' "
+                           f"with keywords: {', '.join(entry.keyword_list)}")
+                    
+                except Exception as e:
+                    logger.error(f"Error adding filter: {e}")
+                    await session.rollback()
+                    raise RedditMonitorError(f"Failed to add filter: {str(e)}")
+                
+                
+    async def remove_filter(self, user_id: str, subreddit: str, entry_name: str) -> str:
+        """Remove a filter for a user."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                try:
+                    # Load UserSubreddit with entries eagerly
+                    stmt = (
+                        select(UserSubreddit)
+                        .options(selectinload(UserSubreddit.entries))
+                        .filter_by(user_id=user_id, subreddit=subreddit)
+                    )
+                    result = await session.execute(stmt)
+                    user_sub = result.scalar_one_or_none()
 
-                        #update subreddit entry cache
-                        if subreddit_name not in self.subreddit_cache:
-                            print("subreddit cache switch")
-                            logging.info("cache switch subreddit")
-                            try:
-                                async_subreddit = await reddit.subreddit(subreddit_name)
-                                #since the rows are sorted by subreddit, if a new one is detected the old one will never appear again
-                                self.subreddit_cache.clear()
-                                self.subreddit_cache[subreddit_name] = [submission async for submission in async_subreddit.new(limit=NEW_POSTS)]
-                            except asyncprawcore.exceptions.RequestException as e:
-                                logging.error(f"RequestException while accessing subreddit '{subreddit_name}': {e}")
-                                # Handle the exception (e.g., skip this subreddit, retry after a delay, etc.)
+                    if not user_sub:
+                        return f"No filters found for subreddit '{subreddit}'"
 
-                        #for each entry associated with the user:subreddit pair 
-                        for entry in user_subreddit.entries:
-                            sent_submissions = 0
-                            #for each submission in the subreddit's new posts
-                            for submission in self.subreddit_cache[subreddit_name]:
-                                if all(keyword.lower() in submission.title.lower() for keyword in entry.keywords.split(',')):
-                                    try:
-                                        user = await client.fetch_user(user_subreddit.user_id)
-                                        post_url = f"https://reddit.com{submission.permalink}"
-                                        await user.send(f"Deal found: {submission.title}\n{post_url}")
-                                        sent_submissions += 1
-                                    except discord.HTTPException as e:
-                                        logging.error(f"Error sending message to user {user_subreddit.user_id}: {e}")
-                            logging.info(f"For user {user_subreddit.discord_name} found {sent_submissions} entries for subreddit {subreddit_name}")
+                    # Find the specific entry
+                    entry = next(
+                        (e for e in user_sub.entries if e.entry_name == entry_name),
+                        None
+                    )
+                    if not entry:
+                        return f"Filter '{entry_name}' not found"
 
-                    # Close the session after processing
-                    session.close()
+                    # Case 1: Delete the entire UserSubreddit if it has only this entry
+                    if len(user_sub.entries) == 1:
+                        await session.delete(user_sub)  # This will cascade delete the entry
+                    else:
+                        # Case 2: Delete only the entry
+                        await session.delete(entry)
 
-                    # Clear the subreddit cache
-                    print("cache clear")
-                    self.subreddit_cache.clear()
+                    return f"Filter '{entry_name}' removed from subreddit '{subreddit}'"
 
-            except asyncprawcore.exceptions.PrawcoreException as e:
-                logging.error(f"Reddit API error: {e}")
-            except discord.errors.HTTPException as e:
-                logging.error(f"Discord network error: {e}")
+                except Exception as e:
+                    await session.rollback()
+                    raise RedditMonitorError(f"Failed to remove filter: {str(e)}")
+
+    async def get_user_profile(self, user_id: str) -> str:
+        """Get user's profile showing all their filters."""
+        async with self.session_factory() as session:
+            try:
+                # Add selectinload here too
+                stmt = select(UserSubreddit).options(
+                    selectinload(UserSubreddit.entries)
+                ).filter_by(user_id=user_id)
+                
+                result = await session.execute(stmt)
+                user_subs = result.scalars().all()
+                
+                if not user_subs:
+                    return "No filters set up yet."
+                
+                profile = ["Your active filters:"]
+                for user_sub in user_subs:
+                    profile.append(f"\nSubreddit: r/{user_sub.subreddit}")
+                    # Now we can safely access entries since they're eager loaded
+                    for entry in user_sub.entries:
+                        keywords = entry.keyword_list
+                        profile.append(f"  - {entry.entry_name}: {', '.join(keywords)}")
+                
+                return "\n".join(profile)
+                
             except Exception as e:
-                logging.error(f"Unexpected error in check_reddit: {e}")
+                logger.error(f"Error getting user profile: {e}")
+                raise RedditMonitorError(f"Failed to get profile: {str(e)}")
 
-            # Sleep before the next iteration
-            await asyncio.sleep(interval)
-
-
-
-
-            
-    def get_user_profile(self, user_id):
-        session = self.alchemy_session()
+    async def check_subreddit(self, reddit: asyncpraw.Reddit, subreddit_name: str) -> List[asyncpraw.models.Submission]:
+        """Fetch new posts from a subreddit."""    
         try:
-            user_subreddits = session.query(UserSubreddit).filter_by(user_id=user_id).all()
-            if not user_subreddits:
-                return "No filters set for this user."
-            profile_info = []
-            for user_subreddit in user_subreddits:
-                for entry in user_subreddit.entries:
-                    profile_info.append(f"{user_subreddit.subreddit} - {entry.entry_name}: {', '.join(entry.keywords.split(','))}")
-            return "\n".join(profile_info)
+            cached_posts = self.cache.get(subreddit_name)
+            if cached_posts is not None:
+                return cached_posts
+
+            subreddit = await reddit.subreddit(subreddit_name)
+            posts = []
+            try:
+                async for post in subreddit.new(limit=self.max_posts):
+                    posts.append(post)
+            except asyncprawcore.exceptions.RateLimitExceeded:
+                logger.warning(f"Rate limit hit for subreddit {subreddit_name}")
+                await asyncio.sleep(60)  # Wait before retrying
+                
+            self.cache.set(subreddit_name, posts)
+            return posts
         except Exception as e:
-            logging.error(f"Error retrieving user profile: {e}")
-            return "Error occurred while retrieving user profile."
-        finally:
-            session.close()
+            logger.error(f"Error checking subreddit {subreddit_name}: {e}")
+            raise RedditMonitorError(f"Failed to fetch posts: {str(e)}")
+
+    async def process_matches(
+        self, 
+        discord_client: discord.Client,
+        posts: List[asyncpraw.models.Submission],
+        user_sub: UserSubreddit,
+        entry: EntryFilter
+    ) -> int:
+        """Process matching posts and send notifications."""
+        sent_count = 0
+        try:
+            user = await discord_client.fetch_user(user_sub.user_id)
+            
+            for post in posts:
+                if self._post_matches_filter(post, entry.keyword_list):
+                    await self._send_notification(user, post)
+                    sent_count += 1
+                    
+            return sent_count
+            
+        except discord.HTTPException as e:
+            logger.error(f"Discord error for user {user_sub.user_id}: {e}")
+            raise RedditMonitorError(f"Failed to send notifications: {str(e)}")
+
+    async def monitor_loop(
+        self, 
+        discord_client: discord.Client, 
+        interval: int
+    ) -> None:
+        """
+        Main monitoring loop that checks Reddit at specified intervals.
+        
+        Args:
+            discord_client: Discord bot client
+            interval: Time in seconds between Reddit checks
+        """
+        while True:
+            try:
+                async with self.initialize_reddit() as reddit:
+                    await self._process_all_filters(discord_client, reddit)
+            except Exception as e:
+                logger.error(f"Error in monitor loop: {e}")
+            finally:
+                # Always wait the interval before next check
+                await asyncio.sleep(interval)
+
+    # Private helper methods
+    async def _get_or_create_user_subreddit(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        discord_name: str,
+        subreddit: str
+    ) -> UserSubreddit:
+        """Get or create a UserSubreddit entry."""
+        stmt = select(UserSubreddit).filter_by(user_id=user_id, subreddit=subreddit)
+        result = await session.execute(stmt)
+        user_sub = result.scalar_one_or_none()
+        
+        if not user_sub:
+            user_sub = UserSubreddit(
+                user_id=user_id,
+                discord_name=discord_name,
+                subreddit=subreddit
+            )
+            session.add(user_sub)
+            await session.flush()
+            
+        return user_sub
+
+    def _post_matches_filter(
+        self, 
+        post: asyncpraw.models.Submission,
+        keywords: List[str]
+    ) -> bool:
+        """Check if a post matches the filter keywords."""
+        return all(
+            keyword.lower() in post.title.lower() 
+            for keyword in keywords
+        )
+
+    async def _send_notification(
+        self,
+        user: discord.User,
+        post: asyncpraw.models.Submission
+    ) -> None:
+        """Send a notification to a user about a matching post."""
+        post_url = f"https://reddit.com{post.permalink}"
+        await user.send(f"Match found: {post.title}\n{post_url}")
+    
+
+    async def _get_or_create_entry_filter(
+        self,
+        session: AsyncSession,
+        user_subreddit_id: int,
+        entry_name: str,
+        keywords: List[str]
+    ) -> EntryFilter:
+        """Get or create an EntryFilter."""
+        stmt = select(EntryFilter).filter_by(
+            user_subreddit_id=user_subreddit_id,
+            entry_name=entry_name
+        )
+        result = await session.execute(stmt)
+        entry = result.scalar_one_or_none()
+        
+        if not entry:
+            entry = EntryFilter(
+                user_subreddit_id=user_subreddit_id,
+                entry_name=entry_name,
+                keywords=','.join(keywords)
+            )
+            session.add(entry)
+            await session.flush()
+        else:
+            entry.keywords = ','.join(keywords)
+            entry.updated_at = datetime.now(timezone.utc)
+        
+        return entry
+
+    async def _process_all_filters(
+        self,
+        discord_client: discord.Client,
+        reddit: asyncpraw.Reddit
+    ) -> None:
+        """Process all filters and send notifications for matches."""
+        async with self.session_factory() as session:
+            # Get all unique subreddits to minimize API calls
+            stmt = select(UserSubreddit.subreddit).distinct()
+            result = await session.execute(stmt)
+            subreddits = [row[0] for row in result]
+            
+            for subreddit_name in subreddits:
+                try:
+                    # Get posts for this subreddit
+                    posts = await self.check_subreddit(reddit, subreddit_name)
+                    
+                    if not posts:
+                        continue
+
+                    # Get latest post time
+                    latest_post_time = max(
+                        datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
+                        for post in posts
+                    )
+
+                    
+                    # Get UserSubreddits with entries
+                    stmt = (
+                        select(UserSubreddit)
+                        .options(selectinload(UserSubreddit.entries))
+                        .filter_by(subreddit=subreddit_name)
+                    )
+                    result = await session.execute(stmt)
+                    user_subs = result.scalars().all()
+                    
+                    # Process each user's filters
+                    for user_sub in user_subs:
+                        for entry in user_sub.entries:
+                            try:
+                                cutoff = (
+                                    entry.last_check_at.replace(tzinfo=timezone.utc)  # Add UTC tzinfo
+                                    if entry.last_check_at 
+                                    else datetime.min.replace(tzinfo=timezone.utc)
+                                )
+                                
+                                relevant_posts = [
+                                    post for post in posts
+                                    if self._get_post_datetime(post) > cutoff
+                                ]
+                                
+                                if relevant_posts:
+                                    match_count = await self.process_matches(
+                                        discord_client, relevant_posts, user_sub, entry
+                                    )
+                                    
+                                    if match_count > 0:
+                                        
+                                        entry.last_check_at = latest_post_time.astimezone(timezone.utc)
+                                        await session.commit()  # Explicit commit after update
+                                        
+                                        logger.info(
+                                            f"Sent {match_count} matches to user "
+                                            f"{user_sub.discord_name} for {subreddit_name}"
+                                        )
+                                    
+                                    # Update timestamp after successful processing
+                                    entry.last_check_at = latest_post_time.astimezone(timezone.utc)
+                                    logger.info(
+                                        f"Updated last_check_at for entry {entry.entry_name} "
+                                        f"to {latest_post_time.astimezone(timezone.utc)}"
+                                    )
+
+                            except Exception as e:
+                                logger.error(
+                                    f"Error processing entry {entry.entry_name}: {e}"
+                                )
+                                raise  # Let the outer transaction handle rollback
+
+                except RedditMonitorError as e:
+                    logger.error(f"Error processing subreddit {subreddit_name}: {e}")
+
+    def _get_post_datetime(self, post: asyncpraw.models.Submission) -> datetime:
+        """Convert post created_utc to timezone-aware datetime."""
+        return datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
+            
