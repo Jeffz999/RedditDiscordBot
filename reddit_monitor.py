@@ -9,6 +9,7 @@ import asyncpraw
 import asyncprawcore
 import discord
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy import select
 
 from cache import SubredditCache
@@ -84,7 +85,9 @@ class RedditMonitor:
             async with session.begin():
                 try:
                     # Find the user's subreddit subscription
-                    stmt = select(UserSubreddit).filter_by(
+                    stmt = select(UserSubreddit).options(
+                    selectinload(UserSubreddit.entries)
+                    ).filter_by(
                         user_id=user_id,
                         subreddit=subreddit
                     )
@@ -105,17 +108,18 @@ class RedditMonitor:
                     if not entry:
                         return f"Filter '{entry_name}' not found"
                     
-                    # Remove the entry
+                    # Keep awaits for delete operations since session is async
                     await session.delete(entry)
+                    await session.flush()  # Ensure deletion is processed
                     
-                    # If no more entries, remove the user_subreddit too
-                    if not user_sub.entries:
+                    # Check entries without triggering lazy load
+                    if len(user_sub.entries) <= 1:
                         await session.delete(user_sub)
+                        await session.flush()
                     
                     return f"Filter '{entry_name}' removed from subreddit '{subreddit}'"
                     
                 except Exception as e:
-                    logger.error(f"Error removing filter: {e}")
                     await session.rollback()
                     raise RedditMonitorError(f"Failed to remove filter: {str(e)}")
 
@@ -123,8 +127,11 @@ class RedditMonitor:
         """Get user's profile showing all their filters."""
         async with self.session_factory() as session:
             try:
-                # Get all user's subreddit subscriptions
-                stmt = select(UserSubreddit).filter_by(user_id=user_id)
+                # Add selectinload here too
+                stmt = select(UserSubreddit).options(
+                    selectinload(UserSubreddit.entries)
+                ).filter_by(user_id=user_id)
+                
                 result = await session.execute(stmt)
                 user_subs = result.scalars().all()
                 
@@ -134,11 +141,10 @@ class RedditMonitor:
                 profile = ["Your active filters:"]
                 for user_sub in user_subs:
                     profile.append(f"\nSubreddit: r/{user_sub.subreddit}")
+                    # Now we can safely access entries since they're eager loaded
                     for entry in user_sub.entries:
                         keywords = entry.keyword_list
-                        profile.append(
-                            f"  - {entry.entry_name}: {', '.join(keywords)}"
-                        )
+                        profile.append(f"  - {entry.entry_name}: {', '.join(keywords)}")
                 
                 return "\n".join(profile)
                 

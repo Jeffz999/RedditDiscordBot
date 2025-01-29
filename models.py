@@ -30,9 +30,10 @@ class UserSubreddit(Base):
     )
     
     # Relationships
-    entries: Mapped[List[EntryFilter]] = relationship(
-        "EntryFilter", 
+    entries = relationship(
+        "EntryFilter",
         back_populates="user_subreddit",
+        lazy="selectin",  # Changed from default lazy loading
         cascade="all, delete-orphan"
     )
 
@@ -48,7 +49,7 @@ class EntryFilter(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_subreddit_id: Mapped[int] = mapped_column(
-        ForeignKey('user_subreddits.id', ondelete='CASCADE'),
+        ForeignKey('user_subreddits.id'),  # No ondelete clause
         index=True
     )
     entry_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -65,9 +66,10 @@ class EntryFilter(Base):
     last_check_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
     # Relationships
-    user_subreddit: Mapped[UserSubreddit] = relationship(
-        "UserSubreddit", 
-        back_populates="entries"
+    user_subreddit = relationship(
+        "UserSubreddit",
+        back_populates="entries",
+        lazy="selectin"  # Changed from default lazy loading
     )
 
     def __repr__(self) -> str:
