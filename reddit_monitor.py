@@ -205,7 +205,10 @@ class RedditMonitor:
         """
         while True:
             try:
-                async with self.initialize_reddit() as reddit:
+                # Properly await the coroutine first
+                reddit = await self.initialize_reddit()
+                # Then use the async context manager
+                async with reddit:
                     await self._process_all_filters(discord_client, reddit)
             except Exception as e:
                 logger.error(f"Error in monitor loop: {e}")

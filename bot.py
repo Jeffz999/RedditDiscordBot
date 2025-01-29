@@ -9,8 +9,7 @@ import asyncio
 
 import urllib.parse 
 from reddit_monitor import RedditMonitor
-from reddit_monitor import Base
-
+from models import Base
 
 import logging
 
@@ -203,7 +202,7 @@ async def remove_filter(ctx, subreddit, entry_name):
 @bot.command()
 async def show_profile(ctx):
     user_id = str(ctx.author.id)
-    profile_info = reddit_monitor.get_user_profile(user_id)
+    profile_info = await reddit_monitor.get_user_profile(user_id)
     await ctx.send(f"Your profile:\n{profile_info}")
     
 @bot.command(name='shutdown')
