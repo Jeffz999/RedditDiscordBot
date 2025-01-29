@@ -1,6 +1,7 @@
 import unittest
 import asyncio
 from datetime import datetime, timezone, timedelta
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select, func
@@ -265,6 +266,59 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 
         finally:
             await self.asyncTearDown()
+            
+    
+    @async_test
+    async def test_remove_last_entry_deletes_user_subreddit(self):
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
+
+            # Remove the only entry
+            await reddit_monitor.remove_filter("user1", "test_sub", "entry1")
+
+            # Verify UserSubreddit deleted
+            async with self.Session() as session:
+                user_sub = await session.get(UserSubreddit, 1)
+                self.assertIsNone(user_sub)
+        finally:
+            await self.asyncTearDown()        
+            
+    
+    @async_test
+    async def test_add_multiple_entries_and_remove_one(self):
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test1"])
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry2", ["test2"])
+
+            # Remove one entry
+            await reddit_monitor.remove_filter("user1", "test_sub", "entry1")
+
+            # Verify remaining entry
+            async with self.Session() as session:
+                user_sub = await session.get(UserSubreddit, 1)
+                self.assertEqual(len(user_sub.entries), 1)
+                self.assertEqual(user_sub.entries[0].entry_name, "entry2")
+        finally:
+            await self.asyncTearDown()
+    
 
     @async_test
     async def test_get_user_profile_1(self):
@@ -297,6 +351,103 @@ class TestRedditMonitorSQLite(unittest.TestCase):
             self.assertIn("  - entry1: kw1", profile)
         finally:
             await self.asyncTearDown()
+            
+    @async_test
+    async def test_initial_run_processes_all_posts(self):
+        await self.asyncSetUp()
+        try:
+            # Setup RedditMonitor and add a filter
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
+
+            # Create test posts with varying timestamps
+            now = datetime.now(timezone.utc)
+            post1 = self._create_mock_post(now - timedelta(minutes=20))
+            post2 = self._create_mock_post(now - timedelta(minutes=5))
+            test_posts = [post1, post2]
+
+            # Mock check_subreddit and process_matches
+            with mock.patch.object(RedditMonitor, 'check_subreddit', AsyncMock(return_value=test_posts)):
+                sent_count = 0
+                async def mock_process_matches(*args):
+                    nonlocal sent_count
+                    sent_count = len(args[1])  # All posts are considered matches
+                    return sent_count
+                reddit_monitor.process_matches = mock_process_matches
+
+                await reddit_monitor._process_all_filters(None, None)
+
+                # Verify all posts processed and last_check_at updated
+                self.assertEqual(sent_count, 2)
+                async with self.Session() as session:
+                    entry = await session.get(EntryFilter, 1)
+        
+                    # Convert naive datetime from DB to UTC-aware
+                    db_time = entry.last_check_at.replace(tzinfo=timezone.utc)
+                    expected_time = datetime.fromtimestamp(post2.created_utc, tz=timezone.utc)
+                
+                    self.assertEqual(db_time, expected_time)
+        finally:
+            await self.asyncTearDown()
+                
+                
+    @async_test
+    async def test_subsequent_run_processes_new_posts_only(self):
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+            await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
+
+            # Set initial last_check_at
+            initial_check_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+            async with self.Session() as session:
+                entry = await session.get(EntryFilter, 1)
+                entry.last_check_at = initial_check_time
+                await session.commit()
+
+            # Mock posts: one old, one new
+            post_old = self._create_mock_post(initial_check_time - timedelta(minutes=5))
+            post_new = self._create_mock_post(initial_check_time + timedelta(minutes=5))
+            with mock.patch.object(RedditMonitor, 'check_subreddit', AsyncMock(return_value=[post_old, post_new])):
+                sent_count = 0
+                async def mock_process_matches(*args):
+                    nonlocal sent_count
+                    sent_count = len(args[1])
+                    return sent_count
+                reddit_monitor.process_matches = mock_process_matches
+
+                await reddit_monitor._process_all_filters(None, None)
+
+                # Only new post processed
+                self.assertEqual(sent_count, 1)
+                async with self.Session() as session:
+                    entry = await session.get(EntryFilter, 1)
+                    db_time = entry.last_check_at.replace(tzinfo=timezone.utc)
+                    self.assertEqual(db_time, datetime.fromtimestamp(post_new.created_utc, tz=timezone.utc))
+        finally:
+            await self.asyncTearDown()
+            
+            
+    def _create_mock_post(self, post_time: datetime) -> MagicMock:
+        post = MagicMock()
+        post.created_utc = post_time.timestamp()
+        post.title = "Test Post"
+        post.permalink = "/r/test/post"
+        return post
 
 if __name__ == '__main__':
     unittest.main()

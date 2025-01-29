@@ -283,7 +283,7 @@ class RedditMonitor:
             await session.flush()
         else:
             entry.keywords = ','.join(keywords)
-            entry.updated_at = datetime.utcnow()
+            entry.updated_at = datetime.now(timezone.utc)
         
         return entry
 
@@ -327,10 +327,12 @@ class RedditMonitor:
                     for user_sub in user_subs:
                         for entry in user_sub.entries:
                             try:
-                                # Initialize cutoff time for first-time checks
-                                cutoff = entry.last_check_at or datetime.min.replace(tzinfo=timezone.utc)
+                                cutoff = (
+                                    entry.last_check_at.replace(tzinfo=timezone.utc)  # Add UTC tzinfo
+                                    if entry.last_check_at 
+                                    else datetime.min.replace(tzinfo=timezone.utc)
+                                )
                                 
-                                # Only process posts newer than the last check
                                 relevant_posts = [
                                     post for post in posts
                                     if self._get_post_datetime(post) > cutoff
@@ -342,16 +344,20 @@ class RedditMonitor:
                                     )
                                     
                                     if match_count > 0:
+                                        
+                                        entry.last_check_at = latest_post_time.astimezone(timezone.utc)
+                                        await session.commit()  # Explicit commit after update
+                                        
                                         logger.info(
                                             f"Sent {match_count} matches to user "
                                             f"{user_sub.discord_name} for {subreddit_name}"
                                         )
                                     
                                     # Update timestamp after successful processing
-                                    entry.last_check_at = latest_post_time
+                                    entry.last_check_at = latest_post_time.astimezone(timezone.utc)
                                     logger.info(
                                         f"Updated last_check_at for entry {entry.entry_name} "
-                                        f"to {latest_post_time}"
+                                        f"to {latest_post_time.astimezone(timezone.utc)}"
                                     )
 
                             except Exception as e:

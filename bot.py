@@ -189,7 +189,7 @@ async def remove_filter(ctx, subreddit, entry_name):
         # Check the user's response
         if confirmation_response.content.lower() == "yes":
             # Call remove_filter
-            response = reddit_monitor.remove_filter(str(ctx.author.id), subreddit, entry_name)
+            response = await reddit_monitor.remove_filter(str(ctx.author.id), subreddit, entry_name)
             await ctx.send(response)
         else:
             await ctx.send("Filter removal cancelled.")

@@ -63,7 +63,11 @@ class EntryFilter(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc)
     )
-    last_check_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=None)
+    last_check_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),  # Explicitly store with timezone
+        nullable=True,
+        default=None
+    )
     
     # Relationships
     user_subreddit = relationship(
