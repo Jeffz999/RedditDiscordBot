@@ -84,41 +84,35 @@ class RedditMonitor:
         async with self.session_factory() as session:
             async with session.begin():
                 try:
-                    # Find the user's subreddit subscription
-                    stmt = select(UserSubreddit).options(
-                    selectinload(UserSubreddit.entries)
-                    ).filter_by(
-                        user_id=user_id,
-                        subreddit=subreddit
+                    # Load UserSubreddit with entries eagerly
+                    stmt = (
+                        select(UserSubreddit)
+                        .options(selectinload(UserSubreddit.entries))
+                        .filter_by(user_id=user_id, subreddit=subreddit)
                     )
                     result = await session.execute(stmt)
                     user_sub = result.scalar_one_or_none()
-                    
+
                     if not user_sub:
                         return f"No filters found for subreddit '{subreddit}'"
-                    
-                    # Find the specific entry filter
-                    stmt = select(EntryFilter).filter_by(
-                        user_subreddit_id=user_sub.id,
-                        entry_name=entry_name
+
+                    # Find the specific entry
+                    entry = next(
+                        (e for e in user_sub.entries if e.entry_name == entry_name),
+                        None
                     )
-                    result = await session.execute(stmt)
-                    entry = result.scalar_one_or_none()
-                    
                     if not entry:
                         return f"Filter '{entry_name}' not found"
-                    
-                    # Keep awaits for delete operations since session is async
-                    await session.delete(entry)
-                    await session.flush()  # Ensure deletion is processed
-                    
-                    # Check entries without triggering lazy load
-                    if len(user_sub.entries) <= 1:
-                        await session.delete(user_sub)
-                        await session.flush()
-                    
+
+                    # Case 1: Delete the entire UserSubreddit if it has only this entry
+                    if len(user_sub.entries) == 1:
+                        await session.delete(user_sub)  # This will cascade delete the entry
+                    else:
+                        # Case 2: Delete only the entry
+                        await session.delete(entry)
+
                     return f"Filter '{entry_name}' removed from subreddit '{subreddit}'"
-                    
+
                 except Exception as e:
                     await session.rollback()
                     raise RedditMonitorError(f"Failed to remove filter: {str(e)}")

@@ -138,6 +138,131 @@ class TestRedditMonitorSQLite(unittest.TestCase):
 
         finally:
             await self.asyncTearDown()
+            
+    @async_test
+    async def test_remove_filter_single_entry(self):
+        """Test removing a filter when it's the only entry for a UserSubreddit."""
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+
+            # Setup: Add a single filter
+            user_id = "test_user"
+            subreddit = "test_subreddit"
+            entry_name = "test_entry"
+            
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name="test_discord",
+                subreddit=subreddit,
+                entry_name=entry_name,
+                keywords=["keyword1"]
+            )
+            
+            # Remove the filter
+            remove_result = await reddit_monitor.remove_filter(user_id, subreddit, entry_name)
+            
+            # Verify database state
+            async with self.Session() as session:
+                # Check UserSubreddit was deleted
+                user_sub_result = await session.execute(
+                    select(UserSubreddit).filter_by(
+                        user_id=user_id,
+                        subreddit=subreddit
+                    )
+                )
+                user_sub = user_sub_result.scalar_one_or_none()
+                self.assertIsNone(user_sub, "UserSubreddit should be deleted")
+                
+                # Check EntryFilter was deleted
+                entry_result = await session.execute(
+                    select(EntryFilter).filter_by(entry_name=entry_name)
+                )
+                entry = entry_result.scalar_one_or_none()
+                self.assertIsNone(entry, "EntryFilter should be deleted")
+                
+        finally:
+            await self.asyncTearDown()
+
+    @async_test
+    async def test_remove_filter_multiple_entries(self):
+        """Test removing one filter when multiple exist for a UserSubreddit."""
+        await self.asyncSetUp()
+        try:
+            reddit_monitor = RedditMonitor(
+                client_id='dummy_id',
+                client_secret='dummy_secret',
+                user_agent='dummy_agent',
+                session_factory=self.Session,
+                cache_timeout=600,
+                max_posts=100
+            )
+
+            # Setup: Add two filters
+            user_id = "test_user"
+            subreddit = "test_subreddit"
+            discord_name = "test_discord"
+            
+            # Add first filter
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name=discord_name,
+                subreddit=subreddit,
+                entry_name="entry1",
+                keywords=["keyword1"]
+            )
+            
+            # Add second filter
+            await reddit_monitor.add_filter(
+                user_id=user_id,
+                discord_name=discord_name,
+                subreddit=subreddit,
+                entry_name="entry2",
+                keywords=["keyword2"]
+            )
+            
+            # Remove one filter
+            remove_result = await reddit_monitor.remove_filter(
+                user_id,
+                subreddit,
+                "entry1"
+            )
+            
+            # Verify database state
+            async with self.Session() as session:
+                # Check UserSubreddit still exists
+                user_sub_result = await session.execute(
+                    select(UserSubreddit).filter_by(
+                        user_id=user_id,
+                        subreddit=subreddit
+                    )
+                )
+                user_sub = user_sub_result.scalar_one_or_none()
+                self.assertIsNotNone(user_sub, "UserSubreddit should still exist")
+                
+                # Check deleted EntryFilter is gone
+                entry1_result = await session.execute(
+                    select(EntryFilter).filter_by(entry_name="entry1")
+                )
+                entry1 = entry1_result.scalar_one_or_none()
+                self.assertIsNone(entry1, "EntryFilter 'entry1' should be deleted")
+                
+                # Check other EntryFilter still exists
+                entry2_result = await session.execute(
+                    select(EntryFilter).filter_by(entry_name="entry2")
+                )
+                entry2 = entry2_result.scalar_one_or_none()
+                self.assertIsNotNone(entry2, "EntryFilter 'entry2' should still exist")
+                
+        finally:
+            await self.asyncTearDown()
 
     @async_test
     async def test_get_user_profile_1(self):
