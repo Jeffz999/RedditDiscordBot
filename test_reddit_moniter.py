@@ -42,7 +42,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
 
@@ -93,7 +92,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
 
@@ -152,7 +150,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
 
@@ -204,7 +201,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
 
@@ -277,7 +273,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
             await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
@@ -302,7 +297,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
             await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test1"])
@@ -330,7 +324,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
 
@@ -362,7 +355,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
             await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
@@ -407,7 +399,6 @@ class TestRedditMonitorSQLite(unittest.TestCase):
                 client_secret='dummy_secret',
                 user_agent='dummy_agent',
                 session_factory=self.Session,
-                cache_timeout=600,
                 max_posts=100
             )
             await reddit_monitor.add_filter("user1", "test", "test_sub", "entry1", ["test"])
