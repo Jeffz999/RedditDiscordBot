@@ -21,6 +21,7 @@ REDDIT_SECRET = os.getenv('REDDIT_SECRET')
 USER_AGENT = os.getenv('USER_AGENT')
 CHECK_INTERVAL = int(os.getenv('PING_TIMER'))
 CHANNEL_ID = os.getenv('CHANNEL_ID')
+NEW_POSTS = int(os.getenv('NEW_POSTS'))
 
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -77,7 +78,8 @@ reddit_monitor = RedditMonitor(
     REDDIT_CLIENT_ID, 
     REDDIT_SECRET, 
     USER_AGENT, 
-    async_session_factory  # Pass the correct session factory
+    async_session_factory,  # Pass the correct session factory
+    max_posts= NEW_POSTS
 )
 
 check_reddit_task = None

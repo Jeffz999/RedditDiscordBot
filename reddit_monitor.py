@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy import select
 
-from cache import SubredditCache
 from models import UserSubreddit, EntryFilter
 from exceptions import RedditMonitorError
 
@@ -31,16 +30,13 @@ class RedditMonitor:
         client_secret: str,
         user_agent: str,
         session_factory: AsyncSessionFactory,
-        cache_timeout: int = 600,
-        max_posts: int = 100
+        max_posts: int = 50
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.user_agent = user_agent
         self.session_factory = session_factory
-        self.cache_timeout = cache_timeout
         self.max_posts = max_posts
-        self.cache = SubredditCache(timeout=cache_timeout)
         
     async def initialize_reddit(self) -> asyncpraw.Reddit:
         """Initialize Reddit API client."""
@@ -149,20 +145,20 @@ class RedditMonitor:
     async def check_subreddit(self, reddit: asyncpraw.Reddit, subreddit_name: str) -> List[asyncpraw.models.Submission]:
         """Fetch new posts from a subreddit."""    
         try:
-            cached_posts = self.cache.get(subreddit_name)
-            if cached_posts is not None:
-                return cached_posts
-
             subreddit = await reddit.subreddit(subreddit_name)
             posts = []
             try:
                 async for post in subreddit.new(limit=self.max_posts):
                     posts.append(post)
-            except asyncprawcore.exceptions.RateLimitExceeded:
-                logger.warning(f"Rate limit hit for subreddit {subreddit_name}")
-                await asyncio.sleep(60)  # Wait before retrying
+            except asyncpraw.exceptions.RedditAPIException as e:
+                # Check if the error is a rate limit
+                if "RATELIMIT" in str(e).upper():
+                    logger.warning(f"Rate limit hit for subreddit {subreddit_name}: {e}")
+                    await asyncio.sleep(60)  # Wait before retrying
+                else:
+                    raise  # Re-raise non-rate-limit errors
+
                 
-            self.cache.set(subreddit_name, posts)
             return posts
         except Exception as e:
             logger.error(f"Error checking subreddit {subreddit_name}: {e}")
@@ -297,27 +293,22 @@ class RedditMonitor:
     ) -> None:
         """Process all filters and send notifications for matches."""
         async with self.session_factory() as session:
-            # Get all unique subreddits to minimize API calls
             stmt = select(UserSubreddit.subreddit).distinct()
             result = await session.execute(stmt)
             subreddits = [row[0] for row in result]
             
             for subreddit_name in subreddits:
                 try:
-                    # Get posts for this subreddit
                     posts = await self.check_subreddit(reddit, subreddit_name)
-                    
                     if not posts:
                         continue
-
-                    # Get latest post time
+                    
+                    #get latest time of new subreddit posts datetime
                     latest_post_time = max(
-                        datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
+                        self._get_post_datetime(post) 
                         for post in posts
                     )
 
-                    
-                    # Get UserSubreddits with entries
                     stmt = (
                         select(UserSubreddit)
                         .options(selectinload(UserSubreddit.entries))
@@ -326,16 +317,18 @@ class RedditMonitor:
                     result = await session.execute(stmt)
                     user_subs = result.scalars().all()
                     
-                    # Process each user's filters
                     for user_sub in user_subs:
                         for entry in user_sub.entries:
                             try:
+                                #get time the entry was last checked at
                                 cutoff = (
-                                    entry.last_check_at.replace(tzinfo=timezone.utc)  # Add UTC tzinfo
+                                    entry.last_check_at.replace(tzinfo=timezone.utc) 
                                     if entry.last_check_at 
                                     else datetime.min.replace(tzinfo=timezone.utc)
                                 )
                                 
+                                #filter to make sure new post datetime > entry check time
+                                #returns new posts
                                 relevant_posts = [
                                     post for post in posts
                                     if self._get_post_datetime(post) > cutoff
@@ -346,33 +339,27 @@ class RedditMonitor:
                                         discord_client, relevant_posts, user_sub, entry
                                     )
                                     
-                                    if match_count > 0:
-                                        
-                                        entry.last_check_at = latest_post_time.astimezone(timezone.utc)
-                                        await session.commit()  # Explicit commit after update
-                                        
-                                        logger.info(
-                                            f"Sent {match_count} matches to user "
-                                            f"{user_sub.discord_name} for {subreddit_name}"
-                                        )
+                                    # Update ONLY if there were relevant posts
+                                    entry.last_check_at = latest_post_time
+                                    await session.commit()
                                     
-                                    # Update timestamp after successful processing
-                                    entry.last_check_at = latest_post_time.astimezone(timezone.utc)
                                     logger.info(
-                                        f"Updated last_check_at for entry {entry.entry_name} "
-                                        f"to {latest_post_time.astimezone(timezone.utc)}"
+                                        f"Updated {entry.entry_name} | "
+                                        f"Matches: {match_count} | "
+                                        f"New cutoff: {latest_post_time}"
                                     )
-
+                                    
                             except Exception as e:
-                                logger.error(
-                                    f"Error processing entry {entry.entry_name}: {e}"
-                                )
-                                raise  # Let the outer transaction handle rollback
+                                logger.error(f"Entry {entry.entry_name} failed: {e}")
+                                await session.rollback()
+                                continue  # Continue with next entry
 
                 except RedditMonitorError as e:
-                    logger.error(f"Error processing subreddit {subreddit_name}: {e}")
+                    logger.error(f"Subreddit {subreddit_name} error: {e}")
 
     def _get_post_datetime(self, post: asyncpraw.models.Submission) -> datetime:
         """Convert post created_utc to timezone-aware datetime."""
+        if not isinstance(post.created_utc, (int, float)):
+            raise ValueError(f"post.created_utc is not a valid timestamp: {post.created_utc}")
         return datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
             
