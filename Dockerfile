@@ -26,7 +26,7 @@ COPY . /app
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000')" || exit 1
+    CMD python -c "import os, asyncio, discord; asyncio.run(discord.Client().login(os.getenv('DISCORD_TOKEN')))" || exit 1
 
 # Specify the actual command to run your bot
 CMD ["python", "bot.py"]
