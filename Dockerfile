@@ -25,8 +25,8 @@ ENV PING_TIMER="600"
 COPY . /app
 
 # Add healthcheck
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import os, asyncio, discord; asyncio.run(discord.Client().login(os.getenv('DISCORD_TOKEN')))" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ps aux | grep "python bot.py" | grep -v grep > /dev/null || exit 1
 
 # Specify the actual command to run your bot
 CMD ["python", "bot.py"]
