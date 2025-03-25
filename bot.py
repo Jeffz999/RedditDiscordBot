@@ -12,6 +12,7 @@ from reddit_monitor import RedditMonitor
 from models import Base
 
 import logging
+from logging.handlers import RotatingFileHandler
 
 import responses
 load_dotenv()
@@ -23,13 +24,20 @@ CHECK_INTERVAL = int(os.getenv('PING_TIMER'))
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 NEW_POSTS = int(os.getenv('NEW_POSTS'))
 
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    filename='app.log', # if you want to log to a file
-                    filemode='a') # Append mode
-
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
+# Create rotating file handler
+# Max size 10MB, keep 5 backup files
+handler = RotatingFileHandler(
+    'app.log',
+    maxBytes=10*1024*1024,  # 10 MB
+    backupCount=5
+)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
+# Add handler to logger
+logger.addHandler(handler)
  
 # Test logging
 logging.info("Logging has been configured")
